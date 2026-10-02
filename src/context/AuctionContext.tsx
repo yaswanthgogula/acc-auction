@@ -1,0 +1,835 @@
+/**
+ * ============================================================================
+ * ACC REAL-TIME LIVE AUCTION CONTEXT & STATE MACHINE
+ * ============================================================================
+ */
+
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { auctionSound } from '../utils/auctionSound';
+import { formatAcademicCategory, normalizeCategoryCode } from '../utils/academicCategories';
+
+export type AuctionFloorPhase = 'UPCOMING' | 'BIDDING' | 'SOLD' | 'UNSOLD';
+
+export interface AuctionSaleRecord {
+  lotId: string;
+  playerId: string;
+  playerName?: string;
+  playerPhoto?: string;
+  bucket?: string;
+  winningFranchiseId: string;
+  winningFranchiseName?: string;
+  winningFranchiseLogo?: string;
+  finalPrice: number;
+  lotState: 'SOLD';
+  timestamp?: number;
+  player?: any;
+  franchise?: any;
+  amount?: number;
+}
+
+export interface UpcomingCandidate {
+  id: string;
+  name: string;
+  roll_number: string;
+  photo_url?: string;
+  program: string;
+  branch: string;
+  academic_year: number;
+  skill?: string;
+  player_type?: string;
+  base_price: number;
+  bucket: string;
+  academicCategoryLabel?: string;
+}
+
+export interface AuctionNotification {
+  id: string;
+  editionId?: string;
+  title: string;
+  message: string;
+  type: string;
+  target?: string;
+  startsAt?: number;
+  startsInMinutes?: number;
+  createdBy?: string;
+  createdAt: number;
+}
+
+export interface PlayerStatsSummary {
+  total: number;
+  eligible: number;
+  batters: number;
+  bowlers: number;
+  allRounders: number;
+  wicketKeepers: number;
+}
+
+interface AuctionContextType {
+  currentLot: any | null;
+  auctionPhase: AuctionFloorPhase;
+  upcomingPlayers: UpcomingCandidate[];
+  franchises: any[];
+  scarcity: Record<string, any>;
+  soldCount: number;
+  unsoldCount: number;
+  serverTime: number;
+  connected: boolean;
+  loading: boolean;
+  editionId: string;
+  recentBids: any[];
+  viewerCount: number;
+  soundEnabled: boolean;
+  lastSaleEvent: AuctionSaleRecord | null;
+  activeNotification: AuctionNotification | null;
+
+  players: any[];
+  loadingPlayers: boolean;
+  playersError: string | null;
+  playersById: Record<string, any>;
+  playersByBucket: Record<string, any[]>;
+  auctionEligiblePlayers: any[];
+  playerStatsSummary: PlayerStatsSummary;
+  fetchPlayers: (options?: { force?: boolean; editionId?: string }) => Promise<any[]>;
+  getPlayerById: (idOrRoll: string) => any | null;
+  getPlayersByBucket: (bucket: string) => any[];
+
+  dismissNotification: () => void;
+  sendAuctionNotification: (params?: { startsInMinutes?: number; title?: string; message?: string; target?: string }) => Promise<{ success: boolean; notification?: any; error?: string }>;
+  toggleSound: () => void;
+  refreshState: (options?: { force?: boolean }) => Promise<void>;
+  placeBid: (franchiseId: string) => Promise<{ success: boolean; error?: string }>;
+  passLot: (franchiseId: string) => Promise<{ success: boolean; error?: string }>;
+  strikeHammer: () => Promise<{ success: boolean; result?: any; error?: string }>;
+  drawNextPlayer: (mode?: 'AUTO' | 'GUEST', playerId?: string) => Promise<{ success: boolean; lot?: any; error?: string }>;
+  skipCurrentLot: (reason?: string) => Promise<{ success: boolean; error?: string }>;
+  undoSale: (saleId: string, reason: string) => Promise<{ success: boolean; error?: string }>;
+  adjustTimer: (seconds: number) => Promise<{ success: boolean; error?: string }>;
+  resetTimer: (seconds?: number) => Promise<{ success: boolean; error?: string }>;
+  removeSquadPlayer: (franchiseId: string, playerId: string, reason: string) => Promise<{ success: boolean; message?: string; error?: string }>;
+  updateCaptainStats: (franchiseId: string, statsData: any) => Promise<{ success: boolean; message?: string; error?: string }>;
+  regenerateFranchiseCredentials: (franchiseId: string) => Promise<{ success: boolean; credentials?: any; error?: string }>;
+}
+
+const AuctionContext = createContext<AuctionContextType | undefined>(undefined);
+
+export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [currentLot, setCurrentLot] = useState<any | null>(null);
+  const [upcomingPlayers, setUpcomingPlayers] = useState<UpcomingCandidate[]>([]);
+  const [franchises, setFranchises] = useState<any[]>([]);
+  const [scarcity, setScarcity] = useState<Record<string, any>>({});
+  const [soldCount, setSoldCount] = useState(0);
+  const [unsoldCount, setUnsoldCount] = useState(0);
+  const [serverTime, setServerTime] = useState(Date.now());
+  const [connected, setConnected] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [editionId, setEditionId] = useState('');
+  const [recentBids, setRecentBids] = useState<any[]>([]);
+  const [viewerCount, setViewerCount] = useState(0);
+  const [soundEnabled, setSoundEnabled] = useState(true);
+  const [lastSaleEvent, setLastSaleEvent] = useState<AuctionSaleRecord | null>(null);
+  const [activeNotification, setActiveNotification] = useState<AuctionNotification | null>(null);
+
+  const [players, setPlayers] = useState<any[]>([]);
+  const [loadingPlayers, setLoadingPlayers] = useState<boolean>(false);
+  const [playersError, setPlayersError] = useState<string | null>(null);
+
+  const playersRef = useRef<any[]>([]);
+  const lastFetchTimeRef = useRef<number>(0);
+  const inFlightFetchPromiseRef = useRef<Promise<any[]> | null>(null);
+
+  useEffect(() => {
+    playersRef.current = players;
+  }, [players]);
+
+  const auctionPhase: AuctionFloorPhase = useMemo(() => {
+    if (currentLot) {
+      if (currentLot.lot_state === 'SOLD') return 'SOLD';
+      if (currentLot.lot_state === 'UNSOLD') return 'UNSOLD';
+      return 'BIDDING';
+    }
+    if (lastSaleEvent && lastSaleEvent.lotState === 'SOLD') {
+      return 'SOLD';
+    }
+    return 'UPCOMING';
+  }, [currentLot, lastSaleEvent]);
+
+  const toggleSound = useCallback(() => {
+    setSoundEnabled((prev) => {
+      const next = !prev;
+      auctionSound.enabled = next;
+      return next;
+    });
+  }, []);
+
+  const lastStateFetchRef = useRef<number>(0);
+  const inFlightStateFetchRef = useRef<Promise<void> | null>(null);
+
+  const refreshState = useCallback(async (options?: { force?: boolean }) => {
+    const now = Date.now();
+    if (!options?.force && now - lastStateFetchRef.current < 2000) {
+      return;
+    }
+    if (inFlightStateFetchRef.current) {
+      return inFlightStateFetchRef.current;
+    }
+
+    const promise = (async () => {
+      try {
+        const res = await fetch('/api/auction/state');
+        const data = await res.json();
+        if (data.success) {
+          lastStateFetchRef.current = Date.now();
+          setCurrentLot((prev: any) => {
+            if (!data.currentLot) return null;
+            if (!prev || prev.id !== data.currentLot.id) return data.currentLot;
+            if ((data.currentLot.bid_count ?? 0) < (prev.bid_count ?? 0)) return prev;
+            return data.currentLot;
+          });
+          if (Array.isArray(data.upcomingPlayers)) {
+            setUpcomingPlayers(data.upcomingPlayers);
+          }
+          setFranchises(data.franchises || []);
+          setScarcity(data.scarcity || {});
+          setSoldCount(data.soldCount || 0);
+          setUnsoldCount(data.unsoldCount || 0);
+          setServerTime(data.serverTime || Date.now());
+          if (typeof data.viewerCount === 'number') {
+            setViewerCount(data.viewerCount);
+          }
+          if (data.editionId) setEditionId(data.editionId);
+        }
+      } catch {
+        // Ignored
+      } finally {
+        setLoading(false);
+        inFlightStateFetchRef.current = null;
+      }
+    })();
+
+    inFlightStateFetchRef.current = promise;
+    return promise;
+  }, []);
+
+  useEffect(() => {
+    refreshState({ force: true });
+
+    const eventSource = new EventSource('/api/auction/events');
+    let fallbackInterval: NodeJS.Timeout | null = null;
+
+    eventSource.onopen = () => {
+      setConnected(true);
+      if (fallbackInterval) {
+        clearInterval(fallbackInterval);
+        fallbackInterval = null;
+      }
+    };
+
+    eventSource.onerror = () => {
+      setConnected(false);
+      if (!fallbackInterval) {
+        fallbackInterval = setInterval(() => {
+          if (document.visibilityState === 'visible') {
+            refreshState();
+          }
+        }, 15000);
+      }
+    };
+
+    eventSource.addEventListener('BID_PLACED', (e) => {
+      try {
+        const payload = JSON.parse(e.data);
+        if (payload.serverTime) setServerTime(payload.serverTime);
+        if (payload.lot) {
+          setCurrentLot((prev: any) => {
+            if (!prev || prev.id !== payload.lot.id || (payload.lot.bid_count ?? 0) >= (prev.bid_count ?? 0)) {
+              return payload.lot;
+            }
+            return prev;
+          });
+        }
+        if (payload.bid) {
+          setRecentBids((prev) => [payload.bid, ...prev.slice(0, 19)]);
+        }
+        auctionSound.playBidChime();
+      } catch {}
+    });
+
+    eventSource.addEventListener('PLAYER_CALLED', (e) => {
+      try {
+        const payload = JSON.parse(e.data);
+        if (payload.serverTime) setServerTime(payload.serverTime);
+        setCurrentLot(payload.lot);
+        setRecentBids([]);
+        setLastSaleEvent(null);
+        auctionSound.playGavelStrike();
+        refreshState({ force: true });
+      } catch {}
+    });
+
+    eventSource.addEventListener('HAMMER_SALE', (e) => {
+      try {
+        const payload = JSON.parse(e.data);
+        if (payload.serverTime) setServerTime(payload.serverTime);
+        setLastSaleEvent(payload);
+        if (payload.lot) {
+          setCurrentLot(payload.lot);
+        } else {
+          setCurrentLot((prev: any) => (prev ? { ...prev, lot_state: 'SOLD', deadline_ms: null } : null));
+        }
+      } catch {}
+      auctionSound.playSoldCelebration();
+      refreshState({ force: true });
+    });
+
+    eventSource.addEventListener('PLAYER_UNSOLD', (e) => {
+      try {
+        const payload = JSON.parse(e.data);
+        if (payload.serverTime) setServerTime(payload.serverTime);
+        setCurrentLot((prev: any) => (prev ? { ...prev, lot_state: 'UNSOLD', deadline_ms: null } : null));
+      } catch {}
+      auctionSound.playGavelStrike();
+      refreshState({ force: true });
+    });
+
+    eventSource.addEventListener('PLAYER_SKIPPED', (e) => {
+      try {
+        const payload = JSON.parse(e.data);
+        if (payload.serverTime) setServerTime(payload.serverTime);
+        setCurrentLot(null);
+      } catch {}
+      refreshState({ force: true });
+    });
+
+    eventSource.addEventListener('STATE_UPDATED', () => {
+      refreshState({ force: true });
+    });
+
+    eventSource.addEventListener('VIEWERS_UPDATED', (e) => {
+      try {
+        const payload = JSON.parse(e.data);
+        if (typeof payload.viewerCount === 'number') {
+          setViewerCount(payload.viewerCount);
+        }
+      } catch {}
+    });
+
+    eventSource.addEventListener('AUCTION_NOTIFICATION', (e) => {
+      try {
+        const payload = JSON.parse(e.data);
+        setActiveNotification(payload);
+        auctionSound.playBidChime();
+      } catch {}
+    });
+
+    return () => {
+      if (fallbackInterval) clearInterval(fallbackInterval);
+      eventSource.close();
+    };
+  }, [refreshState]);
+
+  const fetchPlayers = useCallback(
+    async (options?: { force?: boolean; editionId?: string }): Promise<any[]> => {
+      const now = Date.now();
+      const hasCached = lastFetchTimeRef.current > 0;
+      const isCacheFresh = now - lastFetchTimeRef.current < 20000;
+
+      if (!options?.force && hasCached && isCacheFresh) {
+        return playersRef.current;
+      }
+
+      if (inFlightFetchPromiseRef.current) {
+        return inFlightFetchPromiseRef.current;
+      }
+
+      setLoadingPlayers(true);
+      setPlayersError(null);
+
+      const targetEdition = options?.editionId || editionId || 'ED_ACC_2026';
+      const fetchPromise = (async () => {
+        try {
+          const res = await fetch(`/api/players?editionId=${encodeURIComponent(targetEdition)}`);
+          const data = await res.json();
+          if (data.success && Array.isArray(data.players)) {
+            setPlayers(data.players);
+            playersRef.current = data.players;
+            lastFetchTimeRef.current = Date.now();
+            return data.players;
+          } else {
+            throw new Error(data.error || 'Failed to retrieve players');
+          }
+        } catch (err: any) {
+          const msg = err.message || 'Network error fetching player pool';
+          setPlayersError(msg);
+          return playersRef.current;
+        } finally {
+          setLoadingPlayers(false);
+          inFlightFetchPromiseRef.current = null;
+        }
+      })();
+
+      inFlightFetchPromiseRef.current = fetchPromise;
+      return fetchPromise;
+    },
+    [editionId]
+  );
+
+  useEffect(() => {
+    fetchPlayers();
+  }, [fetchPlayers]);
+
+  const playersById = useMemo<Record<string, any>>(() => {
+    const map: Record<string, any> = {};
+    for (let i = 0; i < players.length; i++) {
+      const p = players[i];
+      if (p.id) map[p.id] = p;
+      if (p.roll_number) map[p.roll_number.toUpperCase()] = p;
+    }
+    return map;
+  }, [players]);
+
+  const playersByBucket = useMemo<Record<string, any[]>>(() => {
+    const buckets: Record<string, any[]> = {
+      B1: [],
+      B2: [],
+      B3: [],
+      B4: [],
+      B5: [],
+      PG: [],
+    };
+    for (let i = 0; i < players.length; i++) {
+      const p = players[i];
+      const b = normalizeCategoryCode(p.bucket) || 'PG';
+      if (!buckets[b]) buckets[b] = [];
+      buckets[b].push(p);
+    }
+    return buckets;
+  }, [players]);
+
+  const auctionEligiblePlayers = useMemo(() => {
+    return players.filter((p) => p.is_auction_eligible === 1 && p.is_referred !== 1);
+  }, [players]);
+
+  const playerStatsSummary = useMemo<PlayerStatsSummary>(() => {
+    let eligible = 0;
+    let batters = 0;
+    let bowlers = 0;
+    let allRounders = 0;
+    let wicketKeepers = 0;
+
+    for (let i = 0; i < players.length; i++) {
+      const p = players[i];
+      if (p.is_auction_eligible === 1 && p.is_referred !== 1) eligible++;
+      const roleStr = (p.player_type || p.skill || '').toUpperCase();
+      if (roleStr.includes('WICKET') || roleStr.includes('KEEPER')) {
+        wicketKeepers++;
+      } else if (roleStr.includes('BOWL') && !roleStr.includes('ALL')) {
+        bowlers++;
+      } else if (roleStr.includes('BAT') && !roleStr.includes('ALL')) {
+        batters++;
+      } else {
+        allRounders++;
+      }
+    }
+
+    return {
+      total: players.length,
+      eligible,
+      batters,
+      bowlers,
+      allRounders,
+      wicketKeepers,
+    };
+  }, [players]);
+
+  const getPlayerById = useCallback(
+    (idOrRoll: string): any | null => {
+      if (!idOrRoll) return null;
+      return playersById[idOrRoll] || playersById[idOrRoll.toUpperCase()] || null;
+    },
+    [playersById]
+  );
+
+  const getPlayersByBucket = useCallback(
+    (bucket: string): any[] => {
+      if (!bucket || bucket === 'ALL') return players;
+      const code = normalizeCategoryCode(bucket);
+      return playersByBucket[code] || [];
+    },
+    [players, playersByBucket]
+  );
+
+  const dismissNotification = useCallback(() => {
+    setActiveNotification(null);
+  }, []);
+
+  const sendAuctionNotification = useCallback(
+    async (params?: {
+      startsInMinutes?: number;
+      title?: string;
+      message?: string;
+      target?: string;
+    }) => {
+      try {
+        const res = await fetch('/api/auction/notify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            editionId,
+            startsInMinutes: params?.startsInMinutes !== undefined ? params.startsInMinutes : 10,
+            title: params?.title,
+            message: params?.message,
+            target: params?.target || 'ALL',
+          }),
+        });
+        const data = await res.json();
+        if (data.success && data.notification) {
+          setActiveNotification(data.notification);
+        }
+        return { success: data.success, notification: data.notification, error: data.error };
+      } catch (err: any) {
+        return { success: false, error: err.message };
+      }
+    },
+    [editionId]
+  );
+
+  const placeBid = useCallback(
+    async (franchiseId: string) => {
+      try {
+        const res = await fetch('/api/auction/bid', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ franchiseId, editionId }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          return { success: false, error: data.error || 'Bid rejected' };
+        }
+        if (data.lot) {
+          setCurrentLot((prev: any) => {
+            if (!prev || prev.id !== data.lot.id || (data.lot.bid_count ?? 0) >= (prev.bid_count ?? 0)) {
+              return data.lot;
+            }
+            return prev;
+          });
+        }
+        return { success: true };
+      } catch (err: any) {
+        return { success: false, error: err.message };
+      }
+    },
+    [editionId]
+  );
+
+  const passLot = useCallback(
+    async (franchiseId: string) => {
+      try {
+        const res = await fetch('/api/auction/pass', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ franchiseId, editionId }),
+        });
+        const data = await res.json();
+        return { success: data.success, error: data.error };
+      } catch (err: any) {
+        return { success: false, error: err.message };
+      }
+    },
+    [editionId]
+  );
+
+  const strikeHammer = useCallback(
+    async () => {
+      try {
+        const res = await fetch('/api/auction/hammer', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ editionId }),
+        });
+        const data = await res.json();
+        if (data.success && data.result) {
+          if (data.result.sold) {
+            setLastSaleEvent({
+              lotId: currentLot?.id || '',
+              playerId: data.result.playerId,
+              winningFranchiseId: data.result.franchiseId,
+              finalPrice: data.result.price,
+              lotState: 'SOLD',
+            });
+          }
+        }
+        refreshState({ force: true });
+        fetchPlayers({ force: true });
+        return { success: data.success, result: data.result, error: data.error };
+      } catch (err: any) {
+        return { success: false, error: err.message };
+      }
+    },
+    [editionId, currentLot?.id, refreshState, fetchPlayers]
+  );
+
+  const drawNextPlayer = useCallback(
+    async (mode: 'AUTO' | 'GUEST' = 'AUTO', playerId?: string) => {
+      try {
+        const res = await fetch('/api/auction/draw-next', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ editionId, mode, playerId }),
+        });
+        const data = await res.json();
+        if (data.success && data.lot) {
+          setCurrentLot(data.lot);
+          setRecentBids([]);
+          setLastSaleEvent(null);
+        }
+        refreshState({ force: true });
+        return { success: data.success, lot: data.lot, error: data.error };
+      } catch (err: any) {
+        return { success: false, error: err.message };
+      }
+    },
+    [editionId, refreshState]
+  );
+
+  const skipCurrentLot = useCallback(
+    async (reason?: string) => {
+      try {
+        const res = await fetch('/api/auction/skip', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ editionId, reason }),
+        });
+        const data = await res.json();
+        if (data.success) {
+          setCurrentLot(null);
+        }
+        refreshState({ force: true });
+        return { success: data.success, error: data.error };
+      } catch (err: any) {
+        return { success: false, error: err.message };
+      }
+    },
+    [editionId, refreshState]
+  );
+
+  const undoSale = useCallback(
+    async (saleId: string, reason: string) => {
+      try {
+        const res = await fetch('/api/auction/undo', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ saleId, reason }),
+        });
+        const data = await res.json();
+        refreshState({ force: true });
+        fetchPlayers({ force: true });
+        return { success: data.success, error: data.error };
+      } catch (err: any) {
+        return { success: false, error: err.message };
+      }
+    },
+    [refreshState, fetchPlayers]
+  );
+
+  const adjustTimer = useCallback(
+    async (seconds: number) => {
+      try {
+        const res = await fetch('/api/auction/timer/adjust', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ seconds, editionId }),
+        });
+        const data = await res.json();
+        refreshState({ force: true });
+        return { success: data.success, error: data.error };
+      } catch (err: any) {
+        return { success: false, error: err.message };
+      }
+    },
+    [editionId, refreshState]
+  );
+
+  const resetTimer = useCallback(
+    async (seconds: number = 30) => {
+      try {
+        const res = await fetch('/api/auction/timer/reset', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ seconds, editionId }),
+        });
+        const data = await res.json();
+        refreshState({ force: true });
+        return { success: data.success, error: data.error };
+      } catch (err: any) {
+        return { success: false, error: err.message };
+      }
+    },
+    [editionId, refreshState]
+  );
+
+  const removeSquadPlayer = useCallback(
+    async (franchiseId: string, playerId: string, reason: string) => {
+      try {
+        const res = await fetch(`/api/franchise/${franchiseId}/squad/remove-player`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ playerId, reason }),
+        });
+        const data = await res.json();
+        if (!data.success) {
+          return { success: false, error: data.error || 'Failed to remove player.' };
+        }
+        refreshState({ force: true });
+        fetchPlayers({ force: true });
+        return { success: true, message: data.message };
+      } catch (err: any) {
+        return { success: false, error: err.message };
+      }
+    },
+    [refreshState, fetchPlayers]
+  );
+
+  const updateCaptainStats = useCallback(
+    async (franchiseId: string, statsData: any) => {
+      try {
+        const res = await fetch(`/api/franchises/${franchiseId}/captain-stats`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(statsData),
+        });
+        const data = await res.json();
+        if (!data.success) {
+          return { success: false, error: data.error || 'Failed to update captain stats.' };
+        }
+        refreshState({ force: true });
+        return { success: true, message: data.message };
+      } catch (err: any) {
+        return { success: false, error: err.message };
+      }
+    },
+    [refreshState]
+  );
+
+  const regenerateFranchiseCredentials = useCallback(
+    async (franchiseId: string) => {
+      try {
+        const res = await fetch(`/api/franchises/${franchiseId}/regenerate-credentials`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        const data = await res.json();
+        if (!data.success) {
+          return { success: false, error: data.error || 'Failed to regenerate credentials.' };
+        }
+        refreshState({ force: true });
+        return { success: true, credentials: data.credentials };
+      } catch (err: any) {
+        return { success: false, error: err.message };
+      }
+    },
+    [refreshState]
+  );
+
+  const contextValue = useMemo<AuctionContextType>(
+    () => ({
+      currentLot,
+      auctionPhase,
+      upcomingPlayers,
+      franchises,
+      scarcity,
+      soldCount,
+      unsoldCount,
+      serverTime,
+      connected,
+      loading,
+      editionId,
+      recentBids,
+      viewerCount,
+      soundEnabled,
+      lastSaleEvent,
+      activeNotification,
+
+      players,
+      loadingPlayers,
+      playersError,
+      playersById,
+      playersByBucket,
+      auctionEligiblePlayers,
+      playerStatsSummary,
+      fetchPlayers,
+      getPlayerById,
+      getPlayersByBucket,
+
+      dismissNotification,
+      sendAuctionNotification,
+      toggleSound,
+      refreshState,
+      placeBid,
+      passLot,
+      strikeHammer,
+      drawNextPlayer,
+      skipCurrentLot,
+      undoSale,
+      adjustTimer,
+      resetTimer,
+      removeSquadPlayer,
+      updateCaptainStats,
+      regenerateFranchiseCredentials,
+    }),
+    [
+      currentLot,
+      auctionPhase,
+      upcomingPlayers,
+      franchises,
+      scarcity,
+      soldCount,
+      unsoldCount,
+      serverTime,
+      connected,
+      loading,
+      editionId,
+      recentBids,
+      viewerCount,
+      soundEnabled,
+      lastSaleEvent,
+      activeNotification,
+      players,
+      loadingPlayers,
+      playersError,
+      playersById,
+      playersByBucket,
+      auctionEligiblePlayers,
+      playerStatsSummary,
+      fetchPlayers,
+      getPlayerById,
+      getPlayersByBucket,
+      dismissNotification,
+      sendAuctionNotification,
+      toggleSound,
+      refreshState,
+      placeBid,
+      passLot,
+      strikeHammer,
+      drawNextPlayer,
+      skipCurrentLot,
+      undoSale,
+      adjustTimer,
+      resetTimer,
+      removeSquadPlayer,
+      updateCaptainStats,
+      regenerateFranchiseCredentials,
+    ]
+  );
+
+  return (
+    <AuctionContext.Provider value={contextValue}>
+      {children}
+    </AuctionContext.Provider>
+  );
+};
+
+export const useAuction = () => {
+  const context = useContext(AuctionContext);
+  if (!context) throw new Error('useAuction must be used within an AuctionProvider');
+  return context;
+};
