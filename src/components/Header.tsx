@@ -15,6 +15,7 @@ import {
   LogOut,
   LogIn,
   Home,
+  Tv,
   Volume2,
   VolumeX,
 } from 'lucide-react';
@@ -38,6 +39,7 @@ export const Header: React.FC<HeaderProps> = ({
     { id: 'PLAYERS', label: 'Players', icon: Users, route: '/players' },
     { id: 'FRANCHISES', label: 'Franchises', icon: Award, route: '/franchises' },
     { id: 'AUCTION', label: 'Auction', icon: Radio, route: '/live', isLive: true },
+    { id: 'PROJECTOR', label: 'Projector', icon: Tv, route: '/projector' },
   ];
 
   return (
@@ -77,7 +79,6 @@ export const Header: React.FC<HeaderProps> = ({
 
         {/* Right Side: Slogan & Auth Controls */}
         <div className="flex items-center gap-3 sm:gap-4">
-          {/* Real Stadium Sound Toggle */}
           <button
             onClick={toggleSound}
             title={soundEnabled ? 'Stadium Sound Enabled (Click to Mute)' : 'Stadium Sound Muted (Click to Enable)'}
@@ -123,7 +124,6 @@ export const Header: React.FC<HeaderProps> = ({
                 </span>
               </div>
 
-              {/* Portal Jump for Role */}
               {(user.role === 'SUPER_ADMIN' || user.role === 'ADMIN' || user.role === 'OPERATOR') && (
                 <button
                   onClick={() => onNavigate('/admin')}

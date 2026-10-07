@@ -2,11 +2,16 @@
  * ============================================================================
  * ACC REAL-TIME LIVE AUCTION CONTEXT & STATE MACHINE
  * ============================================================================
+ * Supports Two Auction Sessions (Req 11), Automatic 10-Second Transition (Req 6),
+ * Guest Mode masked identifiers (Req 5), Player Profile Editing (Req 7),
+ * and Admin Approvals (Req 8).
  */
 
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { auctionSound } from '../utils/auctionSound';
-import { formatAcademicCategory, normalizeCategoryCode } from '../utils/academicCategories';
+import { mobileNotification } from '../utils/mobileNotification';
+import { formatAcademicCategory, normalizeCategoryCode, STRICT_BUCKET_AUCTION_ORDER } from '../utils/academicCategories';
+import { clockSync } from '../utils/clockSync';
 
 export type AuctionFloorPhase = 'UPCOMING' | 'BIDDING' | 'SOLD' | 'UNSOLD';
 
@@ -40,6 +45,9 @@ export interface UpcomingCandidate {
   base_price: number;
   bucket: string;
   academicCategoryLabel?: string;
+  is_detained?: number;
+  auction_session?: number;
+  random_identifier?: string;
 }
 
 export interface AuctionNotification {
@@ -57,6 +65,8 @@ export interface AuctionNotification {
 
 export interface PlayerStatsSummary {
   total: number;
+  approved: number;
+  pendingApproval: number;
   eligible: number;
   batters: number;
   bowlers: number;
@@ -82,6 +92,43 @@ interface AuctionContextType {
   lastSaleEvent: AuctionSaleRecord | null;
   activeNotification: AuctionNotification | null;
 
+  // Custom Timer Alert (Requirement 2)
+  customTimerAlert: {
+    active: boolean;
+    startsAt: number;
+    durationSeconds: number;
+    message: string;
+    phase: 'ALERT_COUNTDOWN' | 'FINAL_10S' | 'STARTED';
+    secondsRemaining?: number;
+  } | null;
+  liveBidNotification: {
+    playerName: string;
+    franchiseName: string;
+    amount: number;
+    message: string;
+    timestamp: number;
+  } | null;
+  setCustomTimerAlert: (durationSeconds: number, message?: string) => Promise<{ success: boolean; alert?: any; error?: string }>;
+  cancelCustomTimerAlert: () => Promise<{ success: boolean; error?: string }>;
+  dismissLiveBidNotification: () => void;
+
+  // Session & Automatic Transition (Requirements 6 & 11)
+  activeSession: 1 | 2;
+  sessionState: string;
+  autoTransitionCountdown: number | null;
+  autoTransitionDeadline: number | null;
+  isPaused: boolean;
+  pausedRemainingMs: number | null;
+  togglePauseAuction: () => Promise<{ success: boolean; isPaused?: boolean; error?: string }>;
+  pauseAuction: () => Promise<{ success: boolean; isPaused?: boolean; error?: string }>;
+  resumeAuction: () => Promise<{ success: boolean; isPaused?: boolean; error?: string }>;
+  setAuctionSession: (session: 1 | 2, action: 'START' | 'END') => Promise<{ success: boolean; message?: string; error?: string }>;
+  assignPlayersToSession: (playerIds: string[], session: 1 | 2) => Promise<{ success: boolean; message?: string; error?: string }>;
+
+  // Player approvals & profiles (Requirements 7 & 8)
+  approvePlayer: (playerId: string, status: 'APPROVED' | 'REJECTED', reason?: string, basePrice?: number, session?: 1 | 2) => Promise<{ success: boolean; message?: string; error?: string }>;
+  updatePlayerProfile: (playerId: string, data: any) => Promise<{ success: boolean; message?: string; player?: any; error?: string }>;
+
   players: any[];
   loadingPlayers: boolean;
   playersError: string | null;
@@ -100,7 +147,7 @@ interface AuctionContextType {
   placeBid: (franchiseId: string) => Promise<{ success: boolean; error?: string }>;
   passLot: (franchiseId: string) => Promise<{ success: boolean; error?: string }>;
   strikeHammer: () => Promise<{ success: boolean; result?: any; error?: string }>;
-  drawNextPlayer: (mode?: 'AUTO' | 'GUEST', playerId?: string) => Promise<{ success: boolean; lot?: any; error?: string }>;
+  drawNextPlayer: (mode?: 'AUTO' | 'GUEST', identifierOrId?: string) => Promise<{ success: boolean; lot?: any; error?: string }>;
   skipCurrentLot: (reason?: string) => Promise<{ success: boolean; error?: string }>;
   undoSale: (saleId: string, reason: string) => Promise<{ success: boolean; error?: string }>;
   adjustTimer: (seconds: number) => Promise<{ success: boolean; error?: string }>;
@@ -119,7 +166,7 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [scarcity, setScarcity] = useState<Record<string, any>>({});
   const [soldCount, setSoldCount] = useState(0);
   const [unsoldCount, setUnsoldCount] = useState(0);
-  const [serverTime, setServerTime] = useState(Date.now());
+  const [serverTime, setServerTime] = useState<number>(() => clockSync.getNow());
   const [connected, setConnected] = useState(false);
   const [loading, setLoading] = useState(true);
   const [editionId, setEditionId] = useState('');
@@ -128,6 +175,40 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [lastSaleEvent, setLastSaleEvent] = useState<AuctionSaleRecord | null>(null);
   const [activeNotification, setActiveNotification] = useState<AuctionNotification | null>(null);
+
+  // Synchronized real-time clock tick for smooth seconds display across views
+  useEffect(() => {
+    const tickInterval = setInterval(() => {
+      setServerTime(clockSync.getNow());
+    }, 500);
+    return () => clearInterval(tickInterval);
+  }, []);
+
+  // Custom Timer Alert & Live Bid Notification (Requirement 2)
+  const [customTimerAlert, setCustomTimerAlert] = useState<{
+    active: boolean;
+    startsAt: number;
+    durationSeconds: number;
+    message: string;
+    phase: 'ALERT_COUNTDOWN' | 'FINAL_10S' | 'STARTED';
+    secondsRemaining?: number;
+  } | null>(null);
+
+  const [liveBidNotification, setLiveBidNotification] = useState<{
+    playerName: string;
+    franchiseName: string;
+    amount: number;
+    message: string;
+    timestamp: number;
+  } | null>(null);
+
+  // Requirements 6 & 11 States
+  const [activeSession, setActiveSession] = useState<1 | 2>(1);
+  const [sessionState, setSessionState] = useState<string>('SESSION_1_ACTIVE');
+  const [autoTransitionCountdown, setAutoTransitionCountdown] = useState<number | null>(null);
+  const [autoTransitionDeadline, setAutoTransitionDeadline] = useState<number | null>(null);
+  const [isPaused, setIsPaused] = useState<boolean>(false);
+  const [pausedRemainingMs, setPausedRemainingMs] = useState<number | null>(null);
 
   const [players, setPlayers] = useState<any[]>([]);
   const [loadingPlayers, setLoadingPlayers] = useState<boolean>(false);
@@ -192,11 +273,18 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
           setScarcity(data.scarcity || {});
           setSoldCount(data.soldCount || 0);
           setUnsoldCount(data.unsoldCount || 0);
-          setServerTime(data.serverTime || Date.now());
+          if (data.serverTime) {
+            clockSync.recordServerTime(data.serverTime);
+          }
+          setServerTime(clockSync.getNow());
           if (typeof data.viewerCount === 'number') {
             setViewerCount(data.viewerCount);
           }
           if (data.editionId) setEditionId(data.editionId);
+          if (data.activeSession) setActiveSession(data.activeSession === 2 ? 2 : 1);
+          if (data.sessionState) setSessionState(data.sessionState);
+          if (data.isPaused !== undefined) setIsPaused(Boolean(data.isPaused));
+          if (data.pausedRemainingMs !== undefined) setPausedRemainingMs(data.pausedRemainingMs);
         }
       } catch {
         // Ignored
@@ -238,7 +326,10 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
     eventSource.addEventListener('BID_PLACED', (e) => {
       try {
         const payload = JSON.parse(e.data);
-        if (payload.serverTime) setServerTime(payload.serverTime);
+        if (payload.serverTime) {
+          clockSync.recordServerTime(payload.serverTime);
+          setServerTime(clockSync.getNow());
+        }
         if (payload.lot) {
           setCurrentLot((prev: any) => {
             if (!prev || prev.id !== payload.lot.id || (payload.lot.bid_count ?? 0) >= (prev.bid_count ?? 0)) {
@@ -250,17 +341,72 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
         if (payload.bid) {
           setRecentBids((prev) => [payload.bid, ...prev.slice(0, 19)]);
         }
+
+        // Requirement 2: Real-time live bid notification to everyone using the app
+        const notifData = payload.bidNotification || (payload.bid && payload.lot ? {
+          playerName: payload.lot.player_name,
+          franchiseName: payload.lot.highest_bidder_name || 'Franchise',
+          amount: payload.bid.amount,
+          message: `🏏 BID ALERT: ${payload.lot.player_name} bid by ${payload.lot.highest_bidder_name || 'Franchise'} for ₹${payload.bid.amount} Lakhs!`,
+          timestamp: payload.bid.timestamp || Date.now(),
+        } : null);
+
+        if (notifData) {
+          setLiveBidNotification(notifData);
+          mobileNotification.sendNotification(
+            `🏏 ACC Live Bid: ₹${notifData.amount}L`,
+            notifData.message
+          );
+        }
+
         auctionSound.playBidChime();
       } catch {}
+    });
+
+    eventSource.addEventListener('CUSTOM_TIMER_ALERT_STARTED', (e) => {
+      try {
+        const payload = JSON.parse(e.data);
+        if (payload.customTimerAlert) {
+          setCustomTimerAlert(payload.customTimerAlert);
+          auctionSound.playBidChime();
+          mobileNotification.sendNotification(
+            '⏳ ACC Auction Starts Soon!',
+            payload.customTimerAlert.message || 'Auction countdown alert started. Return to app now!'
+          );
+        }
+      } catch {}
+    });
+
+    eventSource.addEventListener('CUSTOM_TIMER_FINAL_10S', (e) => {
+      try {
+        const payload = JSON.parse(e.data);
+        if (payload.customTimerAlert) {
+          setCustomTimerAlert(payload.customTimerAlert);
+          auctionSound.playBidChime();
+          mobileNotification.sendNotification(
+            '🚨 Final 10 Seconds!',
+            'Auction starts directly in 10 seconds! Get ready for live bidding.'
+          );
+        }
+      } catch {}
+    });
+
+    eventSource.addEventListener('CUSTOM_TIMER_ALERT_ENDED', () => {
+      setCustomTimerAlert(null);
     });
 
     eventSource.addEventListener('PLAYER_CALLED', (e) => {
       try {
         const payload = JSON.parse(e.data);
-        if (payload.serverTime) setServerTime(payload.serverTime);
+        if (payload.serverTime) {
+          clockSync.recordServerTime(payload.serverTime);
+          setServerTime(clockSync.getNow());
+        }
         setCurrentLot(payload.lot);
         setRecentBids([]);
         setLastSaleEvent(null);
+        setAutoTransitionCountdown(null);
+        setAutoTransitionDeadline(null);
         auctionSound.playGavelStrike();
         refreshState({ force: true });
       } catch {}
@@ -269,7 +415,10 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
     eventSource.addEventListener('HAMMER_SALE', (e) => {
       try {
         const payload = JSON.parse(e.data);
-        if (payload.serverTime) setServerTime(payload.serverTime);
+        if (payload.serverTime) {
+          clockSync.recordServerTime(payload.serverTime);
+          setServerTime(clockSync.getNow());
+        }
         setLastSaleEvent(payload);
         if (payload.lot) {
           setCurrentLot(payload.lot);
@@ -284,20 +433,86 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
     eventSource.addEventListener('PLAYER_UNSOLD', (e) => {
       try {
         const payload = JSON.parse(e.data);
-        if (payload.serverTime) setServerTime(payload.serverTime);
+        if (payload.serverTime) {
+          clockSync.recordServerTime(payload.serverTime);
+          setServerTime(clockSync.getNow());
+        }
         setCurrentLot((prev: any) => (prev ? { ...prev, lot_state: 'UNSOLD', deadline_ms: null } : null));
       } catch {}
       auctionSound.playGavelStrike();
       refreshState({ force: true });
     });
 
+    // Requirement 6: Automatic 10-Second Transition Event Listener
+    eventSource.addEventListener('AUTO_TRANSITION_COUNTDOWN', (e) => {
+      try {
+        const payload = JSON.parse(e.data);
+        setAutoTransitionCountdown(payload.countdownSeconds);
+        setAutoTransitionDeadline(payload.deadlineMs);
+      } catch {}
+    });
+
+    eventSource.addEventListener('AUTO_TRANSITION_CANCELLED', () => {
+      setAutoTransitionCountdown(null);
+      setAutoTransitionDeadline(null);
+    });
+
+    // Requirement 11: Session state listener
+    eventSource.addEventListener('SESSION_STATE_CHANGED', (e) => {
+      try {
+        const payload = JSON.parse(e.data);
+        setActiveSession(payload.activeSession === 2 ? 2 : 1);
+        setSessionState(payload.sessionState);
+        refreshState({ force: true });
+      } catch {}
+    });
+
     eventSource.addEventListener('PLAYER_SKIPPED', (e) => {
       try {
         const payload = JSON.parse(e.data);
-        if (payload.serverTime) setServerTime(payload.serverTime);
+        if (payload.serverTime) {
+          clockSync.recordServerTime(payload.serverTime);
+          setServerTime(clockSync.getNow());
+        }
         setCurrentLot(null);
       } catch {}
       refreshState({ force: true });
+    });
+
+    eventSource.addEventListener('TIMER_ADJUSTED', (e) => {
+      try {
+        const payload = JSON.parse(e.data);
+        if (payload.serverTime) {
+          clockSync.recordServerTime(payload.serverTime);
+          setServerTime(clockSync.getNow());
+        }
+        if (payload.lot) {
+          setCurrentLot((prev: any) => ({ ...prev, ...payload.lot }));
+        }
+      } catch {}
+    });
+
+    eventSource.addEventListener('TIMER_RESET', (e) => {
+      try {
+        const payload = JSON.parse(e.data);
+        if (payload.serverTime) {
+          clockSync.recordServerTime(payload.serverTime);
+          setServerTime(clockSync.getNow());
+        }
+        if (payload.lot) {
+          setCurrentLot((prev: any) => ({ ...prev, ...payload.lot }));
+        }
+      } catch {}
+    });
+
+    eventSource.addEventListener('CLOCK_SYNC', (e) => {
+      try {
+        const payload = JSON.parse(e.data);
+        if (payload.serverTime) {
+          clockSync.recordServerTime(payload.serverTime);
+          setServerTime(clockSync.getNow());
+        }
+      } catch {}
     });
 
     eventSource.addEventListener('STATE_UPDATED', () => {
@@ -318,6 +533,24 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
         const payload = JSON.parse(e.data);
         setActiveNotification(payload);
         auctionSound.playBidChime();
+      } catch {}
+    });
+
+    eventSource.addEventListener('AUCTION_PAUSED', (e) => {
+      try {
+        const payload = JSON.parse(e.data);
+        setIsPaused(true);
+        if (payload.pausedRemainingMs !== undefined) setPausedRemainingMs(payload.pausedRemainingMs);
+        if (payload.lot) setCurrentLot(payload.lot);
+      } catch {}
+    });
+
+    eventSource.addEventListener('AUCTION_RESUMED', (e) => {
+      try {
+        const payload = JSON.parse(e.data);
+        setIsPaused(false);
+        setPausedRemainingMs(null);
+        if (payload.lot) setCurrentLot(payload.lot);
       } catch {}
     });
 
@@ -389,12 +622,12 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const playersByBucket = useMemo<Record<string, any[]>>(() => {
     const buckets: Record<string, any[]> = {
-      B1: [],
-      B2: [],
       B3: [],
       B4: [],
+      B2: [],
       B5: [],
       PG: [],
+      B1: [],
     };
     for (let i = 0; i < players.length; i++) {
       const p = players[i];
@@ -405,11 +638,18 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
     return buckets;
   }, [players]);
 
+  // Requirement 8: Only APPROVED players can enter the auction pool
   const auctionEligiblePlayers = useMemo(() => {
-    return players.filter((p) => p.is_auction_eligible === 1 && p.is_referred !== 1);
+    return players.filter(
+      (p) =>
+        (p.approval_status === 'APPROVED' || (p.approval_status === undefined && p.is_auction_eligible === 1)) &&
+        p.is_referred !== 1
+    );
   }, [players]);
 
   const playerStatsSummary = useMemo<PlayerStatsSummary>(() => {
+    let approved = 0;
+    let pendingApproval = 0;
     let eligible = 0;
     let batters = 0;
     let bowlers = 0;
@@ -418,7 +658,10 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
     for (let i = 0; i < players.length; i++) {
       const p = players[i];
+      if (p.approval_status === 'APPROVED') approved++;
+      if (p.approval_status === 'PENDING') pendingApproval++;
       if (p.is_auction_eligible === 1 && p.is_referred !== 1) eligible++;
+
       const roleStr = (p.player_type || p.skill || '').toUpperCase();
       if (roleStr.includes('WICKET') || roleStr.includes('KEEPER')) {
         wicketKeepers++;
@@ -433,6 +676,8 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
     return {
       total: players.length,
+      approved,
+      pendingApproval,
       eligible,
       batters,
       bowlers,
@@ -456,6 +701,102 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
       return playersByBucket[code] || [];
     },
     [players, playersByBucket]
+  );
+
+  // Requirement 11: Set Auction Session (Start/End Session 1 or 2)
+  const setAuctionSession = useCallback(
+    async (session: 1 | 2, action: 'START' | 'END') => {
+      try {
+        const res = await fetch('/api/admin/session/control', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session, action, editionId }),
+        });
+        const data = await res.json();
+        if (!data.success) {
+          return { success: false, error: data.error || 'Failed to control session' };
+        }
+        setActiveSession(session);
+        setSessionState(data.sessionState);
+        refreshState({ force: true });
+        return { success: true, message: data.message };
+      } catch (err: any) {
+        return { success: false, error: err.message };
+      }
+    },
+    [editionId, refreshState]
+  );
+
+  // Requirement 11: Assign players to Session 1 or Session 2 manually
+  const assignPlayersToSession = useCallback(
+    async (playerIds: string[], session: 1 | 2) => {
+      try {
+        const res = await fetch('/api/admin/session/assign-players', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ playerIds, session }),
+        });
+        const data = await res.json();
+        if (!data.success) {
+          return { success: false, error: data.error || 'Failed to assign players to session' };
+        }
+        fetchPlayers({ force: true });
+        refreshState({ force: true });
+        return { success: true, message: data.message };
+      } catch (err: any) {
+        return { success: false, error: err.message };
+      }
+    },
+    [fetchPlayers, refreshState]
+  );
+
+  // Requirement 8: Approve or Reject player before auction eligibility
+  const approvePlayer = useCallback(
+    async (playerId: string, status: 'APPROVED' | 'REJECTED', reason?: string, basePrice?: number, session?: 1 | 2) => {
+      try {
+        const res = await fetch('/api/admin/approve-player', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ playerId, status, rejectionReason: reason, basePrice, session }),
+        });
+        const data = await res.json();
+        if (!data.success) {
+          return { success: false, error: data.error || 'Approval failed' };
+        }
+        fetchPlayers({ force: true });
+        refreshState({ force: true });
+        return { success: true, message: data.message };
+      } catch (err: any) {
+        return { success: false, error: err.message };
+      }
+    },
+    [fetchPlayers, refreshState]
+  );
+
+  // Requirement 7: Player edit profile
+  const updatePlayerProfile = useCallback(
+    async (playerId: string, updateData: any) => {
+      try {
+        const res = await fetch('/api/players/profile', {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-user-player-id': playerId,
+          },
+          body: JSON.stringify({ playerId, ...updateData }),
+        });
+        const data = await res.json();
+        if (!data.success) {
+          return { success: false, error: data.error || 'Failed to update profile' };
+        }
+        fetchPlayers({ force: true });
+        refreshState({ force: true });
+        return { success: true, message: data.message, player: data.player };
+      } catch (err: any) {
+        return { success: false, error: err.message };
+      }
+    },
+    [fetchPlayers, refreshState]
   );
 
   const dismissNotification = useCallback(() => {
@@ -569,18 +910,20 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
   );
 
   const drawNextPlayer = useCallback(
-    async (mode: 'AUTO' | 'GUEST' = 'AUTO', playerId?: string) => {
+    async (mode: 'AUTO' | 'GUEST' = 'AUTO', identifierOrId?: string) => {
       try {
         const res = await fetch('/api/auction/draw-next', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ editionId, mode, playerId }),
+          body: JSON.stringify({ editionId, mode, playerId: identifierOrId, identifier: identifierOrId }),
         });
         const data = await res.json();
         if (data.success && data.lot) {
           setCurrentLot(data.lot);
           setRecentBids([]);
           setLastSaleEvent(null);
+          setAutoTransitionCountdown(null);
+          setAutoTransitionDeadline(null);
         }
         refreshState({ force: true });
         return { success: data.success, lot: data.lot, error: data.error };
@@ -602,6 +945,8 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
         const data = await res.json();
         if (data.success) {
           setCurrentLot(null);
+          setAutoTransitionCountdown(null);
+          setAutoTransitionDeadline(null);
         }
         refreshState({ force: true });
         return { success: data.success, error: data.error };
@@ -730,6 +1075,96 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
     [refreshState]
   );
 
+  const togglePauseAuction = useCallback(async () => {
+    try {
+      const res = await fetch('/api/auction/toggle-pause', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ editionId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setIsPaused(Boolean(data.isPaused));
+      }
+      refreshState({ force: true });
+      return data;
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  }, [editionId, refreshState]);
+
+  const pauseAuction = useCallback(async () => {
+    try {
+      const res = await fetch('/api/auction/pause', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ editionId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setIsPaused(true);
+      }
+      refreshState({ force: true });
+      return data;
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  }, [editionId, refreshState]);
+
+  const resumeAuction = useCallback(async () => {
+    try {
+      const res = await fetch('/api/auction/resume', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ editionId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setIsPaused(false);
+      }
+      refreshState({ force: true });
+      return data;
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  }, [editionId, refreshState]);
+
+  const setCustomTimerAlertApi = useCallback(
+    async (durationSeconds: number, message?: string) => {
+      try {
+        const res = await fetch('/api/auction/custom-timer-alert', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ durationSeconds, message }),
+        });
+        const data = await res.json();
+        if (!data.success) {
+          return { success: false, error: data.error || 'Failed to set timer alert.' };
+        }
+        if (data.alert) setCustomTimerAlert(data.alert);
+        return { success: true, alert: data.alert };
+      } catch (err: any) {
+        return { success: false, error: err.message };
+      }
+    },
+    []
+  );
+
+  const cancelCustomTimerAlertApi = useCallback(async () => {
+    try {
+      const res = await fetch('/api/auction/custom-timer-alert', { method: 'DELETE' });
+      const data = await res.json();
+      if (data.success) setCustomTimerAlert(null);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  }, []);
+
+  const dismissLiveBidNotification = useCallback(() => {
+    setLiveBidNotification(null);
+  }, []);
+
   const contextValue = useMemo<AuctionContextType>(
     () => ({
       currentLot,
@@ -748,6 +1183,22 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
       soundEnabled,
       lastSaleEvent,
       activeNotification,
+      customTimerAlert,
+      liveBidNotification,
+
+      activeSession,
+      sessionState,
+      autoTransitionCountdown,
+      autoTransitionDeadline,
+      isPaused,
+      pausedRemainingMs,
+      togglePauseAuction,
+      pauseAuction,
+      resumeAuction,
+      setAuctionSession,
+      assignPlayersToSession,
+      approvePlayer,
+      updatePlayerProfile,
 
       players,
       loadingPlayers,
@@ -762,6 +1213,9 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
       dismissNotification,
       sendAuctionNotification,
+      setCustomTimerAlert: setCustomTimerAlertApi,
+      cancelCustomTimerAlert: cancelCustomTimerAlertApi,
+      dismissLiveBidNotification,
       toggleSound,
       refreshState,
       placeBid,
@@ -793,6 +1247,21 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
       soundEnabled,
       lastSaleEvent,
       activeNotification,
+      customTimerAlert,
+      liveBidNotification,
+      activeSession,
+      sessionState,
+      autoTransitionCountdown,
+      autoTransitionDeadline,
+      isPaused,
+      pausedRemainingMs,
+      togglePauseAuction,
+      pauseAuction,
+      resumeAuction,
+      setAuctionSession,
+      assignPlayersToSession,
+      approvePlayer,
+      updatePlayerProfile,
       players,
       loadingPlayers,
       playersError,
@@ -805,6 +1274,9 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
       getPlayersByBucket,
       dismissNotification,
       sendAuctionNotification,
+      setCustomTimerAlertApi,
+      cancelCustomTimerAlertApi,
+      dismissLiveBidNotification,
       toggleSound,
       refreshState,
       placeBid,

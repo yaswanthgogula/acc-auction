@@ -2,12 +2,16 @@
  * ============================================================================
  * ACC ACADEMIC BUCKET COMPLETION PROGRESS BAR
  * ============================================================================
- * Shows academic quotas using updated designations:
- * 1st Year B.Tech, 2nd Year B.Tech, 3rd Year B.Tech, 4th Year B.Tech, Diploma - D, PG - P
+ * Shows academic quotas using official bucket designations:
+ * 1. 3rd Year B.Tech (B3)
+ * 2. 4th Year B.Tech (B4)
+ * 3. 2nd Year B.Tech (B2)
+ * 4. Diploma - D (B5)
+ * 5. PG - P (PG)
+ * 6. 1st Year B.Tech (B1)
  */
 
 import React from 'react';
-import { formatAcademicCategory } from '../utils/academicCategories';
 
 interface BucketProgressBarProps {
   bucketCounts: Record<string, number>;
@@ -19,12 +23,12 @@ export const BucketProgressBar: React.FC<BucketProgressBarProps> = ({
   compact = false,
 }) => {
   const buckets = [
-    { key: 'B1', name: '1st Year B.Tech', min: 2, color: 'from-blue-600 to-cyan-400' },
-    { key: 'B2', name: '2nd Year B.Tech', min: 2, color: 'from-emerald-600 to-teal-400' },
     { key: 'B3', name: '3rd Year B.Tech', min: 2, color: 'from-amber-600 to-yellow-400' },
     { key: 'B4', name: '4th Year B.Tech', min: 2, color: 'from-purple-600 to-violet-400' },
+    { key: 'B2', name: '2nd Year B.Tech', min: 2, color: 'from-emerald-600 to-teal-400' },
     { key: 'B5', name: 'Diploma - D', min: 2, color: 'from-orange-600 to-rose-400' },
     { key: 'PG', name: 'PG - P', min: 0, color: 'from-indigo-600 to-pink-500' },
+    { key: 'B1', name: '1st Year B.Tech', min: 2, color: 'from-blue-600 to-cyan-400' },
   ];
 
   return (

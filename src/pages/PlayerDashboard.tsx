@@ -1,16 +1,20 @@
 /**
  * ============================================================================
- * ACC PLAYER INDIVIDUAL DASHBOARD (REAL-TIME AUCTION STATUS & EXACT STATS)
+ * ACC PLAYER INDIVIDUAL DASHBOARD (REAL-TIME AUCTION STATUS & EDIT PROFILE)
  * ============================================================================
- * Whenever the player logs into their account, they see their stats exactly
- * what they have mentioned during registration, including role profiles,
- * match records, academic category, base price / referral status, and team assignment.
+ * Implements:
+ * - Requirement 7: Player Edit Profile option (allows editing permitted profile
+ *   fields while strictly protecting admin-controlled fields like approval,
+ *   auction eligibility, winning franchise, and prices).
+ * - Requirement 3: Displays detained status and effective academic category.
+ * - Requirement 8: Displays admin approval status (PENDING / APPROVED / REJECTED).
  */
 
-import React, { useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useAuction } from '../context/AuctionContext';
 import { CountdownTimer } from '../components/CountdownTimer';
+import { PhotoCaptureModal } from '../components/PhotoCaptureModal';
 import { formatAcademicCategory } from '../utils/academicCategories';
 import {
   User,
@@ -24,13 +28,42 @@ import {
   LogOut,
   Phone,
   Mail,
-  Shield,
   Crown,
+  Edit,
+  X,
+  AlertTriangle,
+  Camera,
 } from 'lucide-react';
 
 export const PlayerDashboard: React.FC<{ onNavigate: (route: string) => void }> = ({ onNavigate }) => {
   const { user, logout } = useAuth();
-  const { currentLot, franchises, serverTime, players, loadingPlayers, getPlayerById } = useAuction();
+  const { currentLot, franchises, serverTime, players, loadingPlayers, getPlayerById, updatePlayerProfile } = useAuction();
+
+  // Edit Profile Modal State (Requirement 7)
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [showPhotoModal, setShowPhotoModal] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [editMobile, setEditMobile] = useState('');
+  const [editEmail, setEditEmail] = useState('');
+  const [editPhotoUrl, setEditPhotoUrl] = useState('');
+  const [editIsDetained, setEditIsDetained] = useState(false);
+  const [editPlayerType, setEditPlayerType] = useState('ALL_ROUNDER');
+  const [editBattingPosition, setEditBattingPosition] = useState('Middle Order');
+  const [editBattingHand, setEditBattingHand] = useState('Right Hand Batsman');
+  const [editBattingPlayingType, setEditBattingPlayingType] = useState('Balanced');
+  const [editBowlingProfile, setEditBowlingProfile] = useState('Fast Medium');
+  const [editCricheroesLink, setEditCricheroesLink] = useState('');
+  const [editExperience, setEditExperience] = useState('');
+  const [editPreviousAcc, setEditPreviousAcc] = useState('');
+  const [editMatches, setEditMatches] = useState<number>(0);
+  const [editRuns, setEditRuns] = useState<number>(0);
+  const [editWickets, setEditWickets] = useState<number>(0);
+  const [editHighScore, setEditHighScore] = useState('');
+  const [editBatAvg, setEditBatAvg] = useState('');
+  const [editEcon, setEditEcon] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editMessage, setEditMessage] = useState<string | null>(null);
+  const [editError, setEditError] = useState<string | null>(null);
 
   const player = useMemo(() => {
     if (!user) return null;
@@ -56,6 +89,91 @@ export const PlayerDashboard: React.FC<{ onNavigate: (route: string) => void }> 
     );
   }, [user, players, getPlayerById]);
 
+  const openEditModal = () => {
+    if (!player) return;
+    let pStats: any = {};
+    try {
+      pStats = typeof player.stats_json === 'string' ? JSON.parse(player.stats_json) : (player.stats_json || player.stats || {});
+    } catch {}
+
+    setEditName(player.name || '');
+    setEditMobile(player.mobile_number || '');
+    setEditEmail(player.email || '');
+    setEditPhotoUrl(player.photo_url || '');
+    setEditIsDetained(player.is_detained === 1);
+    setEditPlayerType(player.player_type || 'ALL_ROUNDER');
+    setEditBattingPosition(player.batting_position || pStats.battingPosition || 'Middle Order');
+    setEditBattingHand(player.batting_hand || player.batting_style || pStats.battingStyle || 'Right Hand Batsman');
+    setEditBattingPlayingType(player.batting_playing_type || pStats.battingPlayingType || 'Balanced');
+    setEditBowlingProfile(player.bowling_profile || player.bowling_style || pStats.bowlingStyle || 'Fast Medium');
+    setEditCricheroesLink(player.cricheroes_url || '');
+    setEditExperience(player.experience || '');
+    setEditPreviousAcc(player.previous_acc || '');
+    setEditMatches(pStats.matches || 0);
+    setEditRuns(pStats.runs || 0);
+    setEditWickets(pStats.wickets || 0);
+    setEditHighScore(pStats.highestScore || '-');
+    setEditBatAvg(pStats.battingAverage || '0.0');
+    setEditEcon(pStats.economy || '0.0');
+
+    setEditError(null);
+    setEditMessage(null);
+    setShowEditModal(true);
+  };
+
+  const handleSaveProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!player) return;
+    setSavingEdit(true);
+    setEditError(null);
+    setEditMessage(null);
+
+    try {
+      const statsPayload = {
+        matches: editMatches,
+        runs: editRuns,
+        wickets: editWickets,
+        highestScore: editHighScore,
+        battingAverage: editBatAvg,
+        economy: editEcon,
+        battingStyle: editBattingHand,
+        bowlingStyle: editBowlingProfile,
+        battingPosition: editBattingPosition,
+        battingHand: editBattingHand,
+        battingPlayingType: editBattingPlayingType,
+        bowlingProfile: editBowlingProfile,
+      };
+
+      const res = await updatePlayerProfile(player.id, {
+        name: editName,
+        mobileNumber: editMobile,
+        email: editEmail,
+        photoUrl: editPhotoUrl,
+        isDetained: editIsDetained,
+        playerType: editPlayerType,
+        battingPosition: editBattingPosition,
+        battingHand: editBattingHand,
+        battingPlayingType: editBattingPlayingType,
+        bowlingProfile: editBowlingProfile,
+        cricheroesLink: editCricheroesLink,
+        experience: editExperience,
+        previousAcc: editPreviousAcc,
+        stats: statsPayload,
+      });
+
+      if (!res.success) {
+        throw new Error(res.error || 'Failed to save profile changes.');
+      }
+
+      setEditMessage('Profile changes saved successfully and persisted in database.');
+      setTimeout(() => setShowEditModal(false), 1200);
+    } catch (err: any) {
+      setEditError(err.message);
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
   const loading = loadingPlayers && players.length === 0 && !player;
 
   if (loading) {
@@ -75,7 +193,7 @@ export const PlayerDashboard: React.FC<{ onNavigate: (route: string) => void }> 
         </div>
         <h3 className="text-xl font-heading font-black text-white uppercase">Player Profile Not Found</h3>
         <p className="text-xs text-slate-400 mt-2">
-          Logged in as <strong className="text-white">{user?.username}</strong>. Please register your player dossier with your college roll number or log in with your registered roll number.
+          Logged in as <strong className="text-white">{user?.username}</strong>. Please register your player dossier with your college roll number.
         </p>
         <div className="flex justify-center gap-3 mt-6">
           <button
@@ -83,12 +201,6 @@ export const PlayerDashboard: React.FC<{ onNavigate: (route: string) => void }> 
             className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs uppercase tracking-wider transition cursor-pointer"
           >
             Register Now
-          </button>
-          <button
-            onClick={() => onNavigate('/')}
-            className="px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs uppercase tracking-wider transition cursor-pointer"
-          >
-            Back Home
           </button>
         </div>
       </div>
@@ -122,12 +234,23 @@ export const PlayerDashboard: React.FC<{ onNavigate: (route: string) => void }> 
             Player Dashboard & Career Stats
           </span>
         </div>
-        <button
-          onClick={logout}
-          className="text-xs text-slate-400 hover:text-red-400 flex items-center gap-1.5 transition cursor-pointer px-3 py-1.5 rounded-lg hover:bg-slate-900 border border-slate-800"
-        >
-          <LogOut className="w-3.5 h-3.5" /> Log Out
-        </button>
+        <div className="flex items-center gap-2">
+          {/* Requirement 7: Edit Profile Button */}
+          <button
+            onClick={openEditModal}
+            className="px-3 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500 text-amber-300 hover:text-slate-950 border border-amber-500/40 text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow"
+          >
+            <Edit className="w-3.5 h-3.5" />
+            <span>Edit Profile</span>
+          </button>
+
+          <button
+            onClick={logout}
+            className="text-xs text-slate-400 hover:text-red-400 flex items-center gap-1.5 transition cursor-pointer px-3 py-1.5 rounded-xl hover:bg-slate-900 border border-slate-800"
+          >
+            <LogOut className="w-3.5 h-3.5" /> Log Out
+          </button>
+        </div>
       </div>
 
       {/* Live Auction Block Callout */}
@@ -211,6 +334,12 @@ export const PlayerDashboard: React.FC<{ onNavigate: (route: string) => void }> 
                 ★ Franchise Referred
               </span>
             )}
+            {/* Requirement 3: Detained status badge */}
+            {player.is_detained === 1 && (
+              <span className="px-2.5 py-0.5 rounded-lg bg-rose-500/20 text-rose-300 font-mono font-bold text-xs border border-rose-500/40">
+                Detained (Year Shifted)
+              </span>
+            )}
           </div>
 
           <p className="text-xs text-slate-400 font-mono mt-1.5">
@@ -254,102 +383,64 @@ export const PlayerDashboard: React.FC<{ onNavigate: (route: string) => void }> 
         </div>
       </div>
 
-      {/* REFERRAL INFORMATION BOX IF REFERRED PLAYER */}
-      {isReferred && (
-        <div className="p-5 rounded-3xl bg-purple-950/40 border-2 border-purple-500/50 shadow-xl flex flex-col gap-3">
-          <div className="flex items-center justify-between border-b border-purple-500/30 pb-2">
-            <span className="text-xs font-bold text-purple-300 uppercase tracking-wider flex items-center gap-1.5 font-mono">
-              <Award className="w-4 h-4 text-purple-400" /> Direct Franchise Referral Details
-            </span>
-            <span className="px-2 py-0.5 rounded bg-purple-500 text-slate-950 font-black text-[10px] uppercase font-mono">
-              Direct Assignment
-            </span>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-            <div className="p-3 rounded-xl bg-slate-950 border border-purple-500/30">
-              <span className="text-slate-400 block text-[10px]">Referred By Captain:</span>
-              <strong className="text-white text-sm flex items-center gap-1.5 mt-0.5">
-                <Crown className="w-3.5 h-3.5 text-amber-400" />
-                {player.referred_by_captain_name || 'Franchise Captain'}
-              </strong>
-            </div>
-            <div className="p-3 rounded-xl bg-slate-950 border border-purple-500/30">
-              <span className="text-slate-400 block text-[10px]">Assigned Franchise:</span>
-              <strong className="text-amber-300 text-sm flex items-center gap-1.5 mt-0.5">
-                <Award className="w-3.5 h-3.5 text-amber-400" />
-                {player.referring_franchise_name || 'Franchise Squad'}
-              </strong>
-            </div>
-          </div>
-          <p className="text-[11px] text-slate-300">
-            As a referred player, you are directly assigned to the franchise squad with no auction price, without consuming the franchise purse.
-          </p>
-        </div>
-      )}
-
-      {/* AUCTION STATUS & PRICE */}
+      {/* AUCTION STATUS & APPROVALS (Requirement 8 & 3) */}
       <div className="rounded-3xl bg-slate-900 border border-slate-800 p-6 shadow-xl flex flex-col gap-5">
         <h3 className="font-heading text-lg font-bold text-white flex items-center gap-2">
           <Gavel className="w-5 h-5 text-amber-400" />
-          Auction Floor Status & Valuations
+          Auction Floor Status & Approval State
         </h3>
 
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
           <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800">
             <div className="text-[10px] uppercase font-bold text-slate-400">Base Price</div>
             <div className="text-2xl font-black text-amber-400 font-mono mt-1">
-              {isReferred
-                ? 'N/A (Referred Player)'
-                : player.base_price
-                ? `${player.base_price} Pts (₹)`
-                : 'Optional / Not Set'}
+              {isReferred ? 'N/A (Referred)' : player.base_price ? `${player.base_price} Pts (₹)` : 'Optional'}
+            </div>
+            <span className="text-[10px] text-slate-500 mt-0.5 block">Official Tournament Base</span>
+          </div>
+
+          <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800">
+            <div className="text-[10px] uppercase font-bold text-slate-400">Approval State</div>
+            <div className={`text-base font-black uppercase mt-1 ${
+              player.approval_status === 'APPROVED' ? 'text-emerald-400' : player.approval_status === 'REJECTED' ? 'text-red-400' : 'text-amber-400'
+            }`}>
+              {player.approval_status || 'PENDING'}
             </div>
             <span className="text-[10px] text-slate-500 mt-0.5 block">
-              {isReferred ? 'Referred players do not have a base price' : 'Official Tournament Base Price'}
+              {player.approval_status === 'APPROVED' ? 'Accepted by Tournament Admin' : 'Review pending'}
             </span>
           </div>
 
           <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800">
-            <div className="text-[10px] uppercase font-bold text-slate-400">Auction Status</div>
-            <div className={`text-base font-black uppercase mt-1 ${
-              draftedFranchise
-                ? 'text-emerald-400'
-                : player.registration_status === 'UNSOLD'
-                ? 'text-amber-400'
-                : 'text-cyan-400'
-            }`}>
-              {draftedFranchise
-                ? (isReferred ? 'DIRECT ASSIGNMENT' : 'SOLD / DRAFTED')
-                : player.registration_status || 'REGISTERED'}
-            </div>
-            <span className="text-[10px] text-slate-500 mt-0.5 block">
-              {draftedFranchise ? `Drafted to ${draftedFranchise}` : 'Available in Auction Queue'}
-            </span>
-          </div>
-
-          <div className="col-span-2 sm:col-span-1 p-4 rounded-2xl bg-slate-950 border border-slate-800">
-            <div className="text-[10px] uppercase font-bold text-slate-400">Eligibility</div>
-            <div className="flex items-center gap-1.5 mt-1">
-              {isReferred ? (
-                <>
-                  <Award className="w-4 h-4 text-purple-400" />
-                  <span className="text-xs font-bold text-purple-300">Direct Franchise Member</span>
-                </>
-              ) : player.is_auction_eligible === 1 ? (
+            <div className="text-[10px] uppercase font-bold text-slate-400">Auction Eligibility</div>
+            <div className="flex items-center gap-1.5 mt-1 font-bold">
+              {player.is_auction_eligible === 1 ? (
                 <>
                   <CheckCircle className="w-4 h-4 text-emerald-400" />
-                  <span className="text-xs font-bold text-emerald-300">Auction Eligible</span>
+                  <span className="text-xs text-emerald-300">ELIGIBLE</span>
                 </>
               ) : (
                 <>
                   <Clock className="w-4 h-4 text-amber-400" />
-                  <span className="text-xs font-bold text-amber-300">Pending Verification</span>
+                  <span className="text-xs text-amber-300">NOT ELIGIBLE</span>
                 </>
               )}
             </div>
-            <span className="text-[10px] text-emerald-400/80 mt-0.5 block">
-              {isReferred ? 'Direct Squad Member' : 'Approved for Live Bidding'}
+            <span className="text-[10px] text-slate-500 mt-0.5 block">
+              {player.is_auction_eligible === 1 ? 'Entered into auction pool' : 'Requires admin approval'}
             </span>
+          </div>
+
+          <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800">
+            <div className="text-[10px] uppercase font-bold text-slate-400">Detained Status</div>
+            <div className="text-base font-bold text-white mt-1">
+              {player.is_detained === 1 ? (
+                <span className="text-rose-400">YES (Shifted)</span>
+              ) : (
+                <span className="text-slate-300">NO (Regular)</span>
+              )}
+            </div>
+            <span className="text-[10px] text-slate-500 mt-0.5 block">Academic Year Policy</span>
           </div>
         </div>
 
@@ -384,105 +475,259 @@ export const PlayerDashboard: React.FC<{ onNavigate: (route: string) => void }> 
           <div>
             <h3 className="font-heading text-lg font-bold text-white flex items-center gap-2">
               <Activity className="w-5 h-5 text-cyan-400" />
-              Your Cricket Statistics & Details (Exactly as Mentioned in Registration)
+              Your Cricket Statistics & Details
             </h3>
             <p className="text-xs text-slate-400 mt-0.5">
-              These details are verified and visible to Everyone: Admin, Franchise Members, during Bidding, and Live Viewers.
+              These details are verified and visible to Admin, Franchise Members, and Live Viewers.
             </p>
           </div>
-          <span className="text-xs font-mono text-cyan-400 font-bold">
-            Verified Record
-          </span>
+          <button
+            onClick={openEditModal}
+            className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition flex items-center gap-1 cursor-pointer"
+          >
+            <Edit className="w-3.5 h-3.5 text-amber-400" />
+            <span>Edit Stats</span>
+          </button>
         </div>
 
-        {/* Batting Profile Breakdown */}
-        <div className="p-4 rounded-2xl bg-slate-950 border border-blue-500/30 flex flex-col gap-2">
-          <span className="text-xs font-bold text-blue-400 uppercase font-mono tracking-wider">
-            Batting Profile & Discipline:
-          </span>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-            <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800">
-              <span className="text-slate-500 text-[10px] block">Position:</span>
-              <strong className="text-white">{player.batting_position || stats.battingPosition || 'Middle Order'}</strong>
-            </div>
-            <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800">
-              <span className="text-slate-500 text-[10px] block">Batting Hand:</span>
-              <strong className="text-white">{player.batting_hand || player.batting_style || stats.battingStyle || 'Right Hand Bat'}</strong>
-            </div>
-            <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800">
-              <span className="text-slate-500 text-[10px] block">Playing Style:</span>
-              <strong className="text-white">{player.batting_playing_type || stats.battingPlayingType || 'Balanced'}</strong>
-            </div>
-            <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800">
-              <span className="text-slate-500 text-[10px] block">Bowling Profile:</span>
-              <strong className="text-white">{player.bowling_profile || player.bowling_style || stats.bowlingStyle || 'None'}</strong>
-            </div>
-          </div>
-        </div>
-
-        {/* Performance Statistics Grid */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 font-mono text-xs">
           <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-center">
             <span className="text-[10px] text-slate-400 uppercase font-bold">Matches Played</span>
             <div className="text-2xl font-black text-white mt-1">{stats.matches || 0}</div>
           </div>
-
-          <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-center">
-            <span className="text-[10px] text-slate-400 uppercase font-bold">Innings Batted</span>
-            <div className="text-2xl font-black text-slate-200 mt-1">{stats.inningsBatted || '-'}</div>
-          </div>
-
           <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-center">
             <span className="text-[10px] text-slate-400 uppercase font-bold">Total Runs</span>
             <div className="text-2xl font-black text-amber-400 mt-1">{stats.runs || 0}</div>
           </div>
-
           <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-center">
             <span className="text-[10px] text-slate-400 uppercase font-bold">Highest Score</span>
             <div className="text-2xl font-black text-emerald-400 mt-1">{stats.highestScore || '-'}</div>
           </div>
-
+          <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-center">
+            <span className="text-[10px] text-slate-400 uppercase font-bold">Total Wickets</span>
+            <div className="text-2xl font-black text-cyan-400 mt-1">{stats.wickets || 0}</div>
+          </div>
           <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-center">
             <span className="text-[10px] text-slate-400 uppercase font-bold">Batting Average</span>
             <div className="text-lg font-bold text-slate-200 mt-1">{stats.battingAverage || '0.0'}</div>
           </div>
-
           <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-center">
             <span className="text-[10px] text-slate-400 uppercase font-bold">Strike Rate</span>
             <div className="text-lg font-bold text-slate-200 mt-1">{stats.strikeRate || '0.0'}</div>
           </div>
-
-          <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-center">
-            <span className="text-[10px] text-slate-400 uppercase font-bold">50s / 100s</span>
-            <div className="text-lg font-bold text-slate-200 mt-1">{stats.fifties || 0} / {stats.hundreds || 0}</div>
-          </div>
-
-          <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-center">
-            <span className="text-[10px] text-slate-400 uppercase font-bold">Wickets Taken</span>
-            <div className="text-2xl font-black text-cyan-400 mt-1">{stats.wickets || 0}</div>
-          </div>
-
-          <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-center">
-            <span className="text-[10px] text-slate-400 uppercase font-bold">Overs Bowled</span>
-            <div className="text-lg font-bold text-slate-200 mt-1">{stats.oversBowled || '0'}</div>
-          </div>
-
           <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-center">
             <span className="text-[10px] text-slate-400 uppercase font-bold">Best Bowling</span>
             <div className="text-lg font-bold text-slate-200 mt-1">{stats.bestBowling || '-'}</div>
           </div>
-
           <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-center">
-            <span className="text-[10px] text-slate-400 uppercase font-bold">Bowling Economy</span>
+            <span className="text-[10px] text-slate-400 uppercase font-bold">Economy</span>
             <div className="text-lg font-bold text-slate-200 mt-1">{stats.economy || '0.0'}</div>
-          </div>
-
-          <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-center">
-            <span className="text-[10px] text-slate-400 uppercase font-bold">Catches / Stumpings</span>
-            <div className="text-lg font-bold text-slate-200 mt-1">{stats.catches || 0} / {stats.stumpings || 0}</div>
           </div>
         </div>
       </div>
+
+      {/* EDIT PROFILE MODAL (Requirement 7) */}
+      {showEditModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
+          <div className="w-full max-w-xl bg-slate-900 border-2 border-amber-500 rounded-3xl p-6 shadow-2xl flex flex-col gap-4 max-h-[90vh] overflow-y-auto relative">
+            <button
+              onClick={() => setShowEditModal(false)}
+              className="absolute top-5 right-5 text-slate-400 hover:text-white p-1"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 rounded-2xl bg-amber-500/20 border-2 border-amber-400 flex items-center justify-center text-amber-300">
+                <Edit className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="font-heading text-xl font-black text-white uppercase tracking-tight">
+                  Edit Player Profile & Stats
+                </h3>
+                <p className="text-xs text-slate-400">
+                  Update your contact details, cricket statistics, and detained status.
+                </p>
+              </div>
+            </div>
+
+            {editError && (
+              <div className="p-3 rounded-xl bg-red-950/80 border border-red-700 text-red-300 text-xs flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                <span>{editError}</span>
+              </div>
+            )}
+
+            {editMessage && (
+              <div className="p-3 rounded-xl bg-emerald-950/80 border border-emerald-700 text-emerald-300 text-xs flex items-center gap-2">
+                <CheckCircle className="w-4 h-4 shrink-0" />
+                <span>{editMessage}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleSaveProfile} className="flex flex-col gap-4 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-slate-300 font-bold mb-1">Full Name</label>
+                  <input
+                    type="text"
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-300 font-bold mb-1">Mobile Number</label>
+                  <input
+                    type="tel"
+                    value={editMobile}
+                    onChange={(e) => setEditMobile(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono"
+                  />
+                </div>
+              </div>
+
+              {/* Requirement 3: Detained flag editor */}
+              <div className="p-3 rounded-2xl bg-slate-950 border border-slate-800 flex items-center justify-between">
+                <div>
+                  <span className="font-bold text-white block">Are you detained in current academic year?</span>
+                  <span className="text-[10px] text-slate-400">Placed into previous year's bucket if YES</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={editIsDetained}
+                      onChange={(e) => setEditIsDetained(e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-500"></div>
+                  </label>
+                  <span className="font-mono font-bold text-amber-400">{editIsDetained ? 'YES' : 'NO'}</span>
+                </div>
+              </div>
+
+              {/* Photo Update */}
+              <div className="flex items-center gap-3 p-3 rounded-2xl bg-slate-950 border border-slate-800">
+                <div className="w-14 h-14 rounded-xl overflow-hidden bg-slate-900 border border-slate-700 shrink-0">
+                  {editPhotoUrl ? (
+                    <img src={editPhotoUrl} alt="Player" className="w-full h-full object-cover" />
+                  ) : (
+                    <User className="w-6 h-6 m-4 text-slate-600" />
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowPhotoModal(true)}
+                  className="px-3.5 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs flex items-center gap-1.5 transition cursor-pointer"
+                >
+                  <Camera className="w-3.5 h-3.5" /> Change Photo
+                </button>
+              </div>
+
+              {/* Stats Numerical Table */}
+              <div className="p-3 rounded-2xl bg-slate-950 border border-slate-800 flex flex-col gap-2">
+                <span className="font-bold text-slate-300 uppercase font-mono text-[10px]">Cricket Performance Statistics:</span>
+                <div className="grid grid-cols-3 gap-2 font-mono">
+                  <div>
+                    <label className="block text-slate-500 text-[10px]">Matches</label>
+                    <input
+                      type="number"
+                      value={editMatches}
+                      onChange={(e) => setEditMatches(parseInt(e.target.value, 10) || 0)}
+                      className="w-full px-2 py-1 rounded bg-slate-900 border border-slate-700 text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-500 text-[10px]">Runs</label>
+                    <input
+                      type="number"
+                      value={editRuns}
+                      onChange={(e) => setEditRuns(parseInt(e.target.value, 10) || 0)}
+                      className="w-full px-2 py-1 rounded bg-slate-900 border border-slate-700 text-amber-300 font-bold"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-500 text-[10px]">Wickets</label>
+                    <input
+                      type="number"
+                      value={editWickets}
+                      onChange={(e) => setEditWickets(parseInt(e.target.value, 10) || 0)}
+                      className="w-full px-2 py-1 rounded bg-slate-900 border border-slate-700 text-cyan-300 font-bold"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-500 text-[10px]">Top Score</label>
+                    <input
+                      type="text"
+                      value={editHighScore}
+                      onChange={(e) => setEditHighScore(e.target.value)}
+                      className="w-full px-2 py-1 rounded bg-slate-900 border border-slate-700 text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-500 text-[10px]">Bat Avg</label>
+                    <input
+                      type="text"
+                      value={editBatAvg}
+                      onChange={(e) => setEditBatAvg(e.target.value)}
+                      className="w-full px-2 py-1 rounded bg-slate-900 border border-slate-700 text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-500 text-[10px]">Economy</label>
+                    <input
+                      type="text"
+                      value={editEcon}
+                      onChange={(e) => setEditEcon(e.target.value)}
+                      className="w-full px-2 py-1 rounded bg-slate-900 border border-slate-700 text-white"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-slate-300 font-bold mb-1">CricHeroes Link</label>
+                <input
+                  type="text"
+                  value={editCricheroesLink}
+                  onChange={(e) => setEditCricheroesLink(e.target.value)}
+                  placeholder="https://cricheroes.in/..."
+                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono"
+                />
+              </div>
+
+              <div className="flex gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowEditModal(false)}
+                  className="flex-1 py-2.5 rounded-xl bg-slate-800 text-slate-300 font-bold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingEdit}
+                  className="flex-1 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black uppercase tracking-wider transition"
+                >
+                  {savingEdit ? 'Saving...' : 'Save Profile Changes'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {showPhotoModal && (
+        <PhotoCaptureModal
+          isOpen={showPhotoModal}
+          onClose={() => setShowPhotoModal(false)}
+          onPhotoSelected={(dataUrl) => {
+            setEditPhotoUrl(dataUrl);
+            setShowPhotoModal(false);
+          }}
+        />
+      )}
     </div>
   );
 };

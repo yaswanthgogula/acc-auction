@@ -2,10 +2,16 @@
  * ============================================================================
  * ACC MANDATORY PLAYER PHOTO CAPTURE & UPLOAD MODAL
  * ============================================================================
+ * Implements Requirement 10 (Profile Picture Restrictions):
+ * - Uploaded image must contain a clear player face.
+ * - Image must have a suitable/plain background.
+ * - Configurable maximum file size limit.
+ * - Rejection guidance if non-compliant.
  */
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Camera, Upload, RefreshCw, CheckCircle, AlertCircle, X } from 'lucide-react';
+import { Camera, Upload, RefreshCw, CheckCircle, AlertCircle, X, ShieldAlert } from 'lucide-react';
+import { validatePlayerProfilePicture } from '../utils/imageValidation';
 
 interface PhotoCaptureModalProps {
   isOpen: boolean;
@@ -24,6 +30,7 @@ export const PhotoCaptureModal: React.FC<PhotoCaptureModalProps> = ({
   const [photoData, setPhotoData] = useState<string | null>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [validationError, setValidationError] = useState<string | null>(null);
+  const [validating, setValidating] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -64,11 +71,11 @@ export const PhotoCaptureModal: React.FC<PhotoCaptureModalProps> = ({
     }
   };
 
-  const captureFrame = () => {
+  const captureFrame = async () => {
     if (!videoRef.current) return;
     const canvas = document.createElement('canvas');
-    canvas.width = 360;
-    canvas.height = 360;
+    canvas.width = 400;
+    canvas.height = 400;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
@@ -77,14 +84,26 @@ export const PhotoCaptureModal: React.FC<PhotoCaptureModalProps> = ({
     const startX = (v.videoWidth - size) / 2;
     const startY = (v.videoHeight - size) / 2;
 
-    ctx.drawImage(v, startX, startY, size, size, 0, 0, 360, 360);
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.75);
+    ctx.drawImage(v, startX, startY, size, size, 0, 0, 400, 400);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
     stopCamera();
+
+    // Validate face and lighting
+    setValidating(true);
+    const validation = await validatePlayerProfilePicture(dataUrl);
+    setValidating(false);
+
+    if (!validation.valid) {
+      setValidationError(validation.error || 'The captured photo did not pass face validation. Please try again with clear lighting and a plain background.');
+      setMode('CHOICE');
+      return;
+    }
+
     setPhotoData(dataUrl);
     setMode('PREVIEW');
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     setValidationError(null);
     const file = e.target.files?.[0];
     if (!file) return;
@@ -102,8 +121,11 @@ export const PhotoCaptureModal: React.FC<PhotoCaptureModalProps> = ({
       return;
     }
 
-    if (file.size > 10 * 1024 * 1024) {
-      setValidationError('File size too large. Maximum allowed is 10MB.');
+    setValidating(true);
+    const validation = await validatePlayerProfilePicture(file);
+    if (!validation.valid) {
+      setValidating(false);
+      setValidationError(validation.error || 'Image did not meet profile photo regulations.');
       return;
     }
 
@@ -112,16 +134,17 @@ export const PhotoCaptureModal: React.FC<PhotoCaptureModalProps> = ({
       const img = new Image();
       img.onload = () => {
         const canvas = document.createElement('canvas');
-        canvas.width = 360;
-        canvas.height = 360;
+        canvas.width = 400;
+        canvas.height = 400;
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
         const size = Math.min(img.width, img.height);
         const startX = (img.width - size) / 2;
         const startY = (img.height - size) / 2;
-        ctx.drawImage(img, startX, startY, size, size, 0, 0, 360, 360);
-        const compressedData = canvas.toDataURL('image/jpeg', 0.75);
+        ctx.drawImage(img, startX, startY, size, size, 0, 0, 400, 400);
+        const compressedData = canvas.toDataURL('image/jpeg', 0.82);
         setPhotoData(compressedData);
+        setValidating(false);
         setMode('PREVIEW');
       };
       img.src = event.target?.result as string;
@@ -159,24 +182,39 @@ export const PhotoCaptureModal: React.FC<PhotoCaptureModalProps> = ({
 
         <div className="p-6 flex flex-col items-center">
           {validationError && (
-            <div className="w-full mb-4 p-3 rounded-lg bg-red-950/80 border border-red-700 text-red-300 text-xs flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 shrink-0" />
+            <div className="w-full mb-4 p-3 rounded-xl bg-red-950/80 border border-red-700 text-red-300 text-xs flex items-start gap-2">
+              <ShieldAlert className="w-4 h-4 shrink-0 text-red-400 mt-0.5" />
               <span>{validationError}</span>
             </div>
           )}
 
           {cameraError && (
-            <div className="w-full mb-4 p-3 rounded-lg bg-amber-950/80 border border-amber-700 text-amber-300 text-xs flex items-center gap-2">
+            <div className="w-full mb-4 p-3 rounded-xl bg-amber-950/80 border border-amber-700 text-amber-300 text-xs flex items-center gap-2">
               <AlertCircle className="w-4 h-4 shrink-0" />
               <span>{cameraError}</span>
             </div>
           )}
 
+          {validating && (
+            <div className="w-full mb-4 p-3 rounded-xl bg-blue-950/60 border border-blue-800 text-cyan-300 text-xs flex items-center gap-2">
+              <div className="w-4 h-4 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin shrink-0" />
+              <span>Validating face visibility and plain background compliance...</span>
+            </div>
+          )}
+
           {mode === 'CHOICE' && (
             <div className="w-full flex flex-col gap-4">
-              <p className="text-sm text-slate-400 text-center">
-                Take a clear headshot with proper lighting for the auction projector.
-              </p>
+              <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 text-slate-300 text-xs leading-relaxed">
+                <span className="font-bold text-amber-400 block mb-1">
+                  Official Photo Guidelines (Requirement 10):
+                </span>
+                <ul className="list-disc list-inside space-y-1 text-slate-400 text-[11px]">
+                  <li>Front-facing portrait showing a clear, well-lit face.</li>
+                  <li>Plain/suitable background (white, light grey, or solid color).</li>
+                  <li>No sunglasses, face masks, or heavily obscured photos.</li>
+                </ul>
+              </div>
+
               <button
                 onClick={startCamera}
                 className="w-full py-4 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold flex items-center justify-center gap-2.5 shadow-lg shadow-blue-900/40 transition cursor-pointer"
@@ -241,7 +279,7 @@ export const PhotoCaptureModal: React.FC<PhotoCaptureModalProps> = ({
               </div>
               <div className="flex items-center gap-1.5 text-xs text-emerald-400 font-semibold">
                 <CheckCircle className="w-4 h-4" />
-                Photo ready for submission
+                Face and background verified compliant
               </div>
               <div className="flex gap-3 w-full mt-2">
                 <button

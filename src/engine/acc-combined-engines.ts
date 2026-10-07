@@ -1,12 +1,18 @@
 /**
  * ============================================================================
- * ACC ENGINES -- COMBINED SINGLE-FILE BUNDLE
+ * ACC ENGINES -- COMBINED DOMAIN PIPELINES
  * ============================================================================
- * Source of truth: Official ACC Hackathon Problem Statement and domain pipelines
- * Combines AuctionPipeline, AuctionPortalEngine, RegistrationPipeline, DomainLogicPipeline
+ * Source of truth: Official ACC Tournament & Engine Specifications
+ * Includes exact bucket ordering:
+ * 1. 3rd Year B.Tech (B3)
+ * 2. 4th Year B.Tech (B4)
+ * 3. 2nd Year B.Tech (B2)
+ * 4. Diploma (B5)
+ * 5. PG (PG)
+ * 6. 1st Year B.Tech (B1)
  */
 
-import { formatAcademicCategory, normalizeCategoryCode } from '../utils/academicCategories';
+import { formatAcademicCategory, normalizeCategoryCode, deriveEffectiveBucket } from '../utils/academicCategories';
 
 export namespace AuctionPipeline {
   export const FRANCHISE_COUNT = 11;
@@ -18,18 +24,22 @@ export namespace AuctionPipeline {
   export const MAX_REFERRED_PLAYERS = 5;
   export const BUCKET_MINIMUM = 2;
 
-  export const MANDATORY_BUCKETS = ['B1', 'B2', 'B3', 'B4', 'B5'] as const;
+  export const MANDATORY_BUCKETS = ['B3', 'B4', 'B2', 'B5', 'B1'] as const;
   export type MandatoryBucket = typeof MANDATORY_BUCKETS[number];
 
   export const PG_BUCKET = 'PG';
   export type Bucket = MandatoryBucket | typeof PG_BUCKET | string;
 
-  export const DRAW_ORDER_ROUND_1 = ['B3', 'B4', 'B2', 'B5', 'B1', 'PG'] as const;
+  // Requirement 1: Fixed exact bucket order
+  export const DRAW_ORDER_ROUND_1 = ['B3', 'B4', 'B2', 'B5', 'PG', 'B1'] as const;
 
   export const FIRST_BID_TIMER_SECONDS = 30;
   export const SUBSEQUENT_BID_TIMER_SECONDS = 20;
   export const FIRST_BID_TIMER_MS = FIRST_BID_TIMER_SECONDS * 1000;
   export const SUBSEQUENT_BID_TIMER_MS = SUBSEQUENT_BID_TIMER_SECONDS * 1000;
+
+  // Requirement 6: Fixed 10-second automatic transition
+  export const AUTOMATIC_TRANSITION_SECONDS = 10;
 
   export const ROUND_2_BASE_PRICE = 20;
   export const MIN_BASE_PRICE = 20;
@@ -100,6 +110,8 @@ export namespace AuctionPipeline {
     editionId: string;
     isRetained?: boolean;
     isReferred?: boolean;
+    isDetained?: boolean;
+    auctionSession?: 1 | 2;
     skippedCount?: number;
     round: 1 | 2;
     originalBasePrice: number;
@@ -384,16 +396,12 @@ export namespace RegistrationPipeline {
     return Math.max(1, (currentYY - admissionYY) + 1);
   }
 
-  export function deriveBucket(program: string, derivedYear: number): string | null {
-    if (program === 'PG') return null;
-    if (program === 'DIPLOMA') return 'B5';
-    if (program === 'BTECH_REGULAR' || program === 'BTECH_LATERAL') {
-      if (derivedYear === 1) return 'B1';
-      if (derivedYear === 2) return 'B2';
-      if (derivedYear === 3) return 'B3';
-      if (derivedYear === 4) return 'B4';
-    }
-    return null;
+  /**
+   * Requirement 3: Detained student logic included in bucket derivation.
+   */
+  export function deriveBucket(program: string, derivedYear: number, isDetained: boolean = false): string | null {
+    const effective = deriveEffectiveBucket(program, derivedYear, isDetained);
+    return effective.effectiveBucket;
   }
 
   export function derivePlayerType(skills: {
@@ -440,19 +448,26 @@ export namespace RegistrationPipeline {
   }
 }
 
-export function parseAvanthiRollNumber(rawRoll: string) {
+export function parseAvanthiRollNumber(rawRoll: string, isDetained: boolean = false) {
   const res = RegistrationPipeline.parseRollNumber(rawRoll);
   if (!res.isValid) {
     return { valid: false, error: res.error };
   }
   const derivedYear = res.admissionYY ? RegistrationPipeline.calculateAcademicYear(res.admissionYY, res.program || '') : 1;
-  const bucket = RegistrationPipeline.deriveBucket(res.program || '', derivedYear) || 'PG';
+  const effective = deriveEffectiveBucket(res.program || '', derivedYear, isDetained);
+
   return {
     valid: true,
     branch: res.branchName || res.branchCode,
     program: res.program,
     academicYear: derivedYear,
-    bucket,
-    academicCategoryLabel: formatAcademicCategory(bucket),
+    effectiveYear: effective.effectiveYear,
+    isDetained,
+    originalBucket: effective.originalBucket,
+    originalLabel: effective.originalLabel,
+    bucket: effective.effectiveBucket,
+    academicCategoryLabel: effective.label,
+    isDeducted: effective.isDeducted,
+    deductionExplanation: effective.deductionExplanation,
   };
 }

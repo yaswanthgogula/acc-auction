@@ -2,7 +2,5 @@
   "name": "ACC Player Auction Portal",
   "description": "Avanthi Cricket Carnival (ACC) Official Player Auction Portal for college franchise management, player registration, credentials generation, and live auction execution with timer.",
   "requestFramePermissions": [],
-  "majorCapabilities": [
-    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
-  ]
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

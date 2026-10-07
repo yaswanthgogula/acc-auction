@@ -2,12 +2,6 @@
  * ============================================================================
  * ACC FRANCHISE MOBILE-FIRST BIDDING CONSOLE & SQUAD MANAGEMENT
  * ============================================================================
- * Features:
- * - Real-time Live Auction bidding desk with maximum permissible bid enforcement
- * - Captain Career Stats & Role Profile editor ("Enter stats & mention what they are - visible to everyone")
- * - Franchise Captain Squad Management: View squad, view player details, safely remove permitted players
- * - Referral System: Captain can generate unique referral link (max 5 players enforced), view referral count and statuses
- * - Leadership details: Faculty Coordinator (Name, Branch, Mobile), Captain & Vice Captain profiles with cricket statistics
  */
 
 import React, { useState } from 'react';
@@ -38,7 +32,7 @@ import {
 
 export const FranchiseConsole: React.FC = () => {
   const { user } = useAuth();
-  const { currentLot, franchises, placeBid, passLot, serverTime, removeSquadPlayer, updateCaptainStats } = useAuction();
+  const { currentLot, franchises, placeBid, passLot, serverTime, removeSquadPlayer, updateCaptainStats, activeSession, sessionState } = useAuction();
   const [bidding, setBidding] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
@@ -134,7 +128,7 @@ export const FranchiseConsole: React.FC = () => {
       if (!res.success) {
         throw new Error(res.error || 'Failed to update captain stats');
       }
-      setActionSuccess('Your captain stats and what you are have been saved and are now visible to everyone!');
+      setActionSuccess('Your captain stats have been saved and are now visible to everyone!');
       setShowEditCaptainModal(false);
     } catch (err: any) {
       setActionError(err.message || 'Error updating captain stats');
@@ -244,10 +238,9 @@ export const FranchiseConsole: React.FC = () => {
   const currentPrice = currentLot?.current_price ?? currentLot?.opening_price ?? 20;
   const nextIncrement = currentPrice < 100 ? 10 : currentPrice < 200 ? 20 : 30;
   const nextLegalBid = currentLot ? (hasBidder ? currentPrice + nextIncrement : currentPrice) : 0;
-  const canBid = currentLot && myFranchise.bidAllowed && !isHighestBidder;
+  const canBid = currentLot && myFranchise.bidAllowed && !isHighestBidder && !sessionState.endsWith('_ENDED');
   const capStats = myFranchise.captain_stats || {};
 
-  // List of referred players in this franchise
   const referredPlayersList = myFranchise.squad?.filter((p: any) => p.is_referred === 1 || p.acquisition_type === 'DIRECT_ASSIGNMENT' || p.acquisition_type === 'REFERRED') || [];
   const referredCount = Math.min(5, Math.max(myFranchise.referredCount || 0, referredPlayersList.length));
 
@@ -267,6 +260,9 @@ export const FranchiseConsole: React.FC = () => {
                 </h2>
                 <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-blue-950 text-cyan-300 border border-blue-800 font-bold">
                   ID: {myFranchise.id}
+                </span>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-purple-950 text-purple-300 border border-purple-800 font-bold">
+                  Session {activeSession}
                 </span>
               </div>
               <div className="text-[11px] text-slate-400 flex flex-wrap items-center gap-2 mt-1">
@@ -300,7 +296,7 @@ export const FranchiseConsole: React.FC = () => {
 
         {/* CAPTAIN PROFILE & STATS CARD */}
         <div className="p-4 rounded-2xl bg-slate-950/90 border border-amber-500/50 flex flex-col gap-3">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-850 pb-2.5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-2.5">
             <div className="flex items-center gap-2">
               <span className="font-bold text-amber-400 flex items-center gap-1.5 text-sm font-heading">
                 <Crown className="w-4 h-4 text-amber-400" /> Captain Profile & Cricket Statistics
@@ -413,13 +409,6 @@ export const FranchiseConsole: React.FC = () => {
           </button>
         </div>
 
-        {referredCount >= 5 && (
-          <div className="p-3 rounded-xl bg-amber-950/40 border border-amber-600/50 text-amber-300 text-xs font-bold flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400" />
-            <span>Maximum 5 referred players reached for your franchise. You cannot refer additional players.</span>
-          </div>
-        )}
-
         {newReferralLink && (
           <div className="p-4 rounded-2xl bg-slate-950 border border-amber-500/40 flex flex-col gap-2.5">
             <div className="flex items-center justify-between text-xs">
@@ -448,9 +437,6 @@ export const FranchiseConsole: React.FC = () => {
                 <span>{copiedLink ? 'Copied!' : 'Copy Link'}</span>
               </button>
             </div>
-            <p className="text-[11px] text-slate-400">
-              When the player opens this referral link, your franchise and captain details will be locked in and they will be directly assigned to your squad!
-            </p>
           </div>
         )}
       </div>
@@ -518,27 +504,6 @@ export const FranchiseConsole: React.FC = () => {
               </div>
             </div>
           </div>
-
-          <div className="p-3.5 rounded-xl bg-blue-950/40 border border-blue-900/60 flex items-center justify-between text-xs">
-            <div>
-              <span className="text-slate-400 block text-[10px] uppercase font-bold font-mono">
-                Your Maximum Permissible Bid:
-              </span>
-              <span className="font-mono text-lg font-black text-cyan-300">
-                {myFranchise.maxBid || 0} Pts (INR)
-              </span>
-            </div>
-            <div className="text-right text-[10px] text-slate-400 max-w-[180px]">
-              Guarantees reserved funds for mandatory branch quota requirements.
-            </div>
-          </div>
-
-          {!myFranchise.bidAllowed && myFranchise.blockedReason && (
-            <div className="p-3.5 rounded-xl bg-red-950/60 border border-red-800 text-xs text-red-300 flex items-center gap-2">
-              <AlertTriangle className="w-4 h-4 shrink-0" />
-              <span>{myFranchise.blockedReason}</span>
-            </div>
-          )}
 
           <div className="grid grid-cols-2 gap-3 pt-2">
             <button
@@ -622,7 +587,6 @@ export const FranchiseConsole: React.FC = () => {
           </div>
         </div>
 
-        {/* ACTIVE SQUAD TAB */}
         {squadTab === 'ACTIVE' && (
           <div className="flex flex-col gap-3 max-h-[500px] overflow-y-auto pr-1 text-xs">
             {myFranchise.squad?.map((m: any, idx: number) => (
@@ -657,151 +621,145 @@ export const FranchiseConsole: React.FC = () => {
                         <span className="font-mono text-amber-400 font-bold">{formatAcademicCategory(m.bucket)}</span>
                         <span>•</span>
                         <span>{m.player_type || 'Player'}</span>
-                        {m.branch && (
-                          <>
-                            <span>•</span>
-                            <span className="text-cyan-300 font-medium">{m.branch}</span>
-                          </>
-                        )}
                       </div>
                     </div>
                   </div>
 
                   <div className="text-right shrink-0">
-                    <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-blue-950 text-cyan-300 mr-1.5 uppercase font-mono">
-                      {m.acquisition_type || 'HAMMER'}
-                    </span>
                     <span className="font-mono text-amber-400 font-black text-sm">
                       {m.acquisition_type === 'DIRECT_ASSIGNMENT' ? '0 Pts (Direct Assignment)' : `${m.price} Pts (₹)`}
                     </span>
                   </div>
                 </div>
 
-                <div className="pt-2 border-t border-slate-900 flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => setSelectedPlayerDossier(m)}
-                      className="px-2.5 py-1 rounded-lg bg-blue-600/20 hover:bg-blue-600 text-blue-300 hover:text-white border border-blue-500/30 font-bold text-[11px] flex items-center gap-1 transition cursor-pointer"
-                    >
-                      <Eye className="w-3.5 h-3.5" />
-                      <span>View Details</span>
-                    </button>
-
-                    <button
-                      onClick={() => {
-                        setRemovingPlayer(m);
-                        setRemovalReason('');
-                      }}
-                      className="px-2.5 py-1 rounded-lg bg-rose-600/20 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-500/30 font-bold text-[11px] flex items-center gap-1 transition cursor-pointer"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      <span>Remove from Squad</span>
-                    </button>
-                  </div>
-
-                  {m.mobile_number && (
-                    <div className="flex items-center gap-1 text-[11px] text-emerald-400 font-mono">
-                      <Phone className="w-3 h-3" />
-                      <a href={`tel:${m.mobile_number}`} className="hover:underline">{m.mobile_number}</a>
-                    </div>
-                  )}
+                <div className="pt-2 border-t border-slate-900 flex items-center justify-between">
+                  <button
+                    onClick={() => {
+                      setRemovingPlayer(m);
+                      setRemovalReason('');
+                    }}
+                    className="px-2.5 py-1 rounded-lg bg-rose-600/20 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-500/30 font-bold text-[11px] flex items-center gap-1 transition cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Remove from Squad</span>
+                  </button>
                 </div>
               </div>
             ))}
-
-            {(!myFranchise.squad || myFranchise.squad.length === 0) && (
-              <div className="text-xs text-slate-500 text-center py-8">
-                No active players in squad yet.
-              </div>
-            )}
           </div>
         )}
 
-        {/* REFERRED PLAYERS TAB */}
         {squadTab === 'REFERRALS' && (
-          <div className="flex flex-col gap-3 max-h-[500px] overflow-y-auto pr-1 text-xs">
-            <div className="p-3 rounded-xl bg-purple-950/40 border border-purple-800/40 flex items-center justify-between">
-              <div>
-                <span className="font-bold text-purple-300 uppercase block font-mono text-xs">
-                  Referred Players: {referredCount} / 5
-                </span>
-                <span className="text-[11px] text-slate-400">
-                  Directly assigned to your squad at 0 price without consuming your auction purse.
-                </span>
+          <div className="flex flex-col gap-4 text-xs">
+            <div className="p-4 rounded-2xl bg-purple-950/40 border border-purple-500/40 flex flex-col gap-2">
+              <span className="font-bold text-purple-300 font-heading text-sm">
+                Franchise Captain Referral Link (Max 5 Players)
+              </span>
+              <p className="text-[11px] text-slate-300">
+                Share this referral link with candidates you want to recruit. Referred players will register without seeing a base price. Once approved by the Tournament Admin, they join your squad directly with 0 points.
+              </p>
+              <div className="flex items-center gap-2 mt-1">
+                <input
+                  type="text"
+                  readOnly
+                  value={`${typeof window !== 'undefined' ? window.location.origin : ''}/player/register?ref=${myFranchise.id}`}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-cyan-300 font-mono text-xs select-all"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(`${window.location.origin}/player/register?ref=${myFranchise.id}`);
+                    setActionSuccess('Referral link copied to clipboard!');
+                    setTimeout(() => setActionSuccess(null), 3000);
+                  }}
+                  className="px-3.5 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs shrink-0 cursor-pointer transition shadow"
+                >
+                  Copy Link
+                </button>
               </div>
             </div>
 
-            {referredPlayersList.map((m: any, idx: number) => (
-              <div key={m.id || idx} className="p-3.5 rounded-2xl bg-slate-950 border border-purple-500/40 flex flex-col gap-2">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="font-bold text-white text-sm">{m.player_name}</div>
-                    <div className="text-[11px] text-slate-400 font-mono">
-                      Roll: {m.roll_number} • {m.branch} • {formatAcademicCategory(m.bucket)}
+            <div className="flex flex-col gap-2.5 max-h-[350px] overflow-y-auto pr-1">
+              {referredPlayersList.length === 0 ? (
+                <div className="p-8 rounded-2xl bg-slate-950 border border-slate-800 text-center text-slate-500">
+                  No referred players registered under your franchise yet. Share your referral link above!
+                </div>
+              ) : (
+                referredPlayersList.map((m: any, idx: number) => (
+                  <div
+                    key={m.id || idx}
+                    className="p-3.5 rounded-2xl bg-slate-950 border border-slate-800 flex items-center justify-between gap-3"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-xl overflow-hidden bg-slate-800 shrink-0 border border-slate-700">
+                        {m.photo_url ? (
+                          <img src={m.photo_url} alt="" className="w-full h-full object-cover" />
+                        ) : (
+                          <Users className="w-5 h-5 m-2.5 text-slate-500" />
+                        )}
+                      </div>
+                      <div>
+                        <div className="font-bold text-white text-sm flex items-center gap-2">
+                          <span>{m.player_name}</span>
+                          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-purple-950 text-purple-300 border border-purple-800">
+                            Referred
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-slate-400 mt-0.5 font-mono">
+                          {m.roll_number} • {formatAcademicCategory(m.bucket)}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="text-right">
+                      <span className="text-xs font-mono font-bold text-emerald-400 block">
+                        Direct Assignment (0 Pts)
+                      </span>
+                      <span className="text-[10px] text-slate-400">
+                        Approved by Admin
+                      </span>
                     </div>
                   </div>
-                  <span className="px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800 text-[10px] font-bold uppercase font-mono">
-                    Direct Assignment (0 Pts)
-                  </span>
-                </div>
-                {m.mobile_number && (
-                  <div className="flex items-center gap-1 text-emerald-400 font-mono text-[11px]">
-                    <Phone className="w-3 h-3" />
-                    <span>{m.mobile_number}</span>
-                  </div>
-                )}
-              </div>
-            ))}
-
-            {referredPlayersList.length === 0 && (
-              <div className="text-center py-8 text-slate-500">
-                You have not referred any players yet. Click "Refer Player" above to generate your referral link.
-              </div>
-            )}
+                ))
+              )}
+            </div>
           </div>
         )}
 
-        {/* REMOVED SQUAD TAB */}
         {squadTab === 'REMOVED' && (
-          <div className="flex flex-col gap-3 max-h-[500px] overflow-y-auto pr-1 text-xs">
-            {myFranchise.removedSquad?.map((m: any, idx: number) => (
-              <div
-                key={m.id || idx}
-                className="p-3.5 rounded-2xl bg-slate-950 border border-slate-800/70 flex flex-col gap-2"
-              >
-                <div className="flex items-center justify-between">
+          <div className="flex flex-col gap-2.5 max-h-[350px] overflow-y-auto pr-1 text-xs">
+            {(!myFranchise.removedSquad || myFranchise.removedSquad.length === 0) ? (
+              <div className="p-8 rounded-2xl bg-slate-950 border border-slate-800 text-center text-slate-500">
+                No players have been removed from your squad.
+              </div>
+            ) : (
+              myFranchise.removedSquad.map((m: any, idx: number) => (
+                <div
+                  key={m.id || idx}
+                  className="p-3.5 rounded-2xl bg-slate-950 border border-rose-950/40 flex items-center justify-between gap-3"
+                >
                   <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-center font-bold text-slate-500">
-                      <Users className="w-5 h-5" />
+                    <div className="w-10 h-10 rounded-xl overflow-hidden bg-slate-800 shrink-0 border border-slate-700 opacity-60">
+                      {m.photo_url ? (
+                        <img src={m.photo_url} alt="" className="w-full h-full object-cover" />
+                      ) : (
+                        <Users className="w-5 h-5 m-2.5 text-slate-500" />
+                      )}
                     </div>
                     <div>
-                      <div className="font-bold text-white text-sm">{m.player_name}</div>
-                      <div className="text-[11px] text-slate-400 font-mono">
-                        {m.roll_number} • {formatAcademicCategory(m.bucket)} • {m.branch}
+                      <div className="font-bold text-slate-300 text-sm line-through">
+                        {m.player_name}
+                      </div>
+                      <div className="text-[11px] text-rose-400 mt-0.5">
+                        Reason: {m.removal_reason || 'Squad adjustment'}
                       </div>
                     </div>
                   </div>
-                  <span className="px-2 py-0.5 rounded bg-rose-950 text-rose-300 border border-rose-800 text-[10px] font-bold uppercase font-mono">
-                    REMOVED
+                  <span className="text-[10px] font-mono text-slate-500">
+                    Status: REMOVED
                   </span>
                 </div>
-
-                <div className="p-2 rounded-lg bg-slate-900 border border-slate-800 text-[11px] text-slate-300">
-                  <span className="text-slate-500 font-bold">Removal Reason: </span>
-                  <span>{m.removal_reason || 'Removed by Franchise Captain'}</span>
-                  {m.removed_at && (
-                    <span className="text-slate-500 ml-2 font-mono text-[10px]">
-                      ({new Date(m.removed_at).toLocaleDateString()})
-                    </span>
-                  )}
-                </div>
-              </div>
-            ))}
-
-            {(!myFranchise.removedSquad || myFranchise.removedSquad.length === 0) && (
-              <div className="text-xs text-slate-500 text-center py-8">
-                No squad members have been removed.
-              </div>
+              ))
             )}
           </div>
         )}
@@ -826,192 +784,66 @@ export const FranchiseConsole: React.FC = () => {
                 <h3 className="font-heading text-xl font-black text-white uppercase tracking-tight">
                   Captain Career Stats & Role Profile
                 </h3>
-                <p className="text-xs text-slate-400">
-                  Enter your stats and mention what you are. These details will be public and viewable by everyone!
-                </p>
               </div>
             </div>
 
             <form onSubmit={handleSaveCaptainStats} className="flex flex-col gap-4 text-xs">
-              <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/40 flex flex-col gap-2">
-                <label className="block text-amber-300 font-bold uppercase tracking-wider text-xs">
-                  Mention What You Are (Playing Role & Specialty) *
-                </label>
+              <div>
+                <label className="block text-slate-300 font-bold mb-1">Playing Role & Specialty *</label>
                 <input
                   type="text"
                   required
                   value={editCapSpecialty}
                   onChange={(e) => setEditCapSpecialty(e.target.value)}
-                  placeholder="e.g. Pure Opening Batter, Express Fast Bowler, Batting All-Rounder, Wicket-Keeper Finisher"
+                  placeholder="e.g. Pure Opening Batter, Batting All-Rounder"
                   className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-bold"
                 />
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-2 font-mono">
                 <div>
-                  <label className="block text-slate-400 mb-1">Captain Name *</label>
+                  <label className="block text-slate-400 mb-1">Matches</label>
                   <input
-                    type="text"
-                    required
-                    value={editCapName}
-                    onChange={(e) => setEditCapName(e.target.value)}
-                    className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-white"
+                    type="number"
+                    value={editCapMatches}
+                    onChange={(e) => setEditCapMatches(parseInt(e.target.value, 10) || 0)}
+                    className="w-full px-2 py-1.5 rounded bg-slate-950 border border-slate-700 text-white"
                   />
                 </div>
                 <div>
-                  <label className="block text-slate-400 mb-1">Roll Number</label>
+                  <label className="block text-slate-400 mb-1">Runs</label>
                   <input
-                    type="text"
-                    value={editCapRoll}
-                    onChange={(e) => setEditCapRoll(e.target.value)}
-                    placeholder="e.g. 23811A0501"
-                    className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-cyan-300 font-mono"
+                    type="number"
+                    value={editCapRuns}
+                    onChange={(e) => setEditCapRuns(parseInt(e.target.value, 10) || 0)}
+                    className="w-full px-2 py-1.5 rounded bg-slate-950 border border-slate-700 text-amber-300 font-bold"
                   />
                 </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-slate-400 mb-1">Batting Style</label>
-                  <select
-                    value={editCapBattingStyle}
-                    onChange={(e) => setEditCapBattingStyle(e.target.value)}
-                    className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-white"
-                  >
-                    <option>Right Hand Bat</option>
-                    <option>Left Hand Bat</option>
-                  </select>
+                  <label className="block text-slate-400 mb-1">Wickets</label>
+                  <input
+                    type="number"
+                    value={editCapWickets}
+                    onChange={(e) => setEditCapWickets(parseInt(e.target.value, 10) || 0)}
+                    className="w-full px-2 py-1.5 rounded bg-slate-950 border border-slate-700 text-cyan-300 font-bold"
+                  />
                 </div>
-                <div>
-                  <label className="block text-slate-400 mb-1">Bowling Style</label>
-                  <select
-                    value={editCapBowlingStyle}
-                    onChange={(e) => setEditCapBowlingStyle(e.target.value)}
-                    className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-white"
-                  >
-                    <option>Right Arm Fast</option>
-                    <option>Right Arm Fast Medium</option>
-                    <option>Right Arm Medium</option>
-                    <option>Right Arm Off-Spin</option>
-                    <option>Right Arm Leg-Spin</option>
-                    <option>Left Arm Fast</option>
-                    <option>Left Arm Orthodox</option>
-                    <option>None</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* Stats Numerical Table */}
-              <div className="p-3 rounded-2xl bg-slate-950 border border-slate-800 flex flex-col gap-2">
-                <span className="text-[11px] font-bold text-slate-300 font-mono uppercase">
-                  Career Match Statistics:
-                </span>
-                <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 font-mono">
-                  <div>
-                    <label className="block text-slate-500 text-[10px]">Matches</label>
-                    <input
-                      type="number"
-                      value={editCapMatches}
-                      onChange={(e) => setEditCapMatches(parseInt(e.target.value, 10) || 0)}
-                      className="w-full px-2 py-1.5 rounded bg-slate-900 border border-slate-700 text-white text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-slate-500 text-[10px]">Total Runs</label>
-                    <input
-                      type="number"
-                      value={editCapRuns}
-                      onChange={(e) => setEditCapRuns(parseInt(e.target.value, 10) || 0)}
-                      className="w-full px-2 py-1.5 rounded bg-slate-900 border border-slate-700 text-amber-300 text-xs font-bold"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-slate-500 text-[10px]">Total Wickets</label>
-                    <input
-                      type="number"
-                      value={editCapWickets}
-                      onChange={(e) => setEditCapWickets(parseInt(e.target.value, 10) || 0)}
-                      className="w-full px-2 py-1.5 rounded bg-slate-900 border border-slate-700 text-cyan-300 text-xs font-bold"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-slate-500 text-[10px]">Top Score</label>
-                    <input
-                      type="text"
-                      value={editCapHighScore}
-                      onChange={(e) => setEditCapHighScore(e.target.value)}
-                      placeholder="e.g. 104*"
-                      className="w-full px-2 py-1.5 rounded bg-slate-900 border border-slate-700 text-white text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-slate-500 text-[10px]">Batting Avg</label>
-                    <input
-                      type="text"
-                      value={editCapAvg}
-                      onChange={(e) => setEditCapAvg(e.target.value)}
-                      placeholder="e.g. 42.5"
-                      className="w-full px-2 py-1.5 rounded bg-slate-900 border border-slate-700 text-white text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-slate-500 text-[10px]">Strike Rate</label>
-                    <input
-                      type="text"
-                      value={editCapSR}
-                      onChange={(e) => setEditCapSR(e.target.value)}
-                      placeholder="e.g. 152.0"
-                      className="w-full px-2 py-1.5 rounded bg-slate-900 border border-slate-700 text-white text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-slate-500 text-[10px]">Economy Rate</label>
-                    <input
-                      type="text"
-                      value={editCapEconomy}
-                      onChange={(e) => setEditCapEconomy(e.target.value)}
-                      placeholder="e.g. 6.8"
-                      className="w-full px-2 py-1.5 rounded bg-slate-900 border border-slate-700 text-white text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-slate-500 text-[10px]">Best Bowling</label>
-                    <input
-                      type="text"
-                      value={editCapBestBowl}
-                      onChange={(e) => setEditCapBestBowl(e.target.value)}
-                      placeholder="e.g. 4/18"
-                      className="w-full px-2 py-1.5 rounded bg-slate-900 border border-slate-700 text-white text-xs"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-slate-400 mb-1">CricHeroes Career URL</label>
-                <input
-                  type="text"
-                  value={editCapCricheroes}
-                  onChange={(e) => setEditCapCricheroes(e.target.value)}
-                  placeholder="https://cricheroes.in/..."
-                  className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-white font-mono text-xs"
-                />
               </div>
 
               <div className="flex gap-3 pt-2">
                 <button
                   type="button"
                   onClick={() => setShowEditCaptainModal(false)}
-                  className="flex-1 py-3 rounded-xl bg-slate-800 text-slate-300 font-bold"
+                  className="flex-1 py-2.5 rounded-xl bg-slate-800 text-slate-300"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={savingCaptainStats}
-                  className="flex-1 py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black uppercase tracking-wider transition shadow-lg shadow-amber-950/40"
+                  className="flex-1 py-2.5 rounded-xl bg-amber-500 text-slate-950 font-bold uppercase"
                 >
-                  {savingCaptainStats ? 'Saving...' : 'Save & Publish Stats'}
+                  {savingCaptainStats ? 'Saving...' : 'Save Captain Stats'}
                 </button>
               </div>
             </form>
@@ -1019,35 +851,23 @@ export const FranchiseConsole: React.FC = () => {
         </div>
       )}
 
-      {/* SAFE SQUAD REMOVAL MODAL */}
+      {/* REMOVE SQUAD MODAL */}
       {removingPlayer && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
           <div className="w-full max-w-md bg-slate-900 border-2 border-rose-600 rounded-3xl p-6 shadow-2xl flex flex-col gap-4">
-            <div className="w-12 h-12 rounded-full bg-rose-600/20 border border-rose-500 flex items-center justify-center text-rose-400 mx-auto">
-              <Trash2 className="w-6 h-6" />
-            </div>
-
             <h3 className="font-heading text-xl font-bold text-white text-center">
               Remove Player from Squad?
             </h3>
-            <p className="text-xs text-slate-300 text-center leading-relaxed">
+            <p className="text-xs text-slate-300 text-center">
               Are you sure you want to remove <strong className="text-white">"{removingPlayer.player_name}"</strong> from your squad?
-              Their player record and statistics will remain completely preserved in the database.
             </p>
-
-            <div>
-              <label className="block text-slate-300 text-xs font-bold mb-1">
-                Reason for Removal *
-              </label>
-              <textarea
-                value={removalReason}
-                onChange={(e) => setRemovalReason(e.target.value)}
-                placeholder="Specify reason for squad status update..."
-                rows={2}
-                className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs"
-              />
-            </div>
-
+            <textarea
+              value={removalReason}
+              onChange={(e) => setRemovalReason(e.target.value)}
+              placeholder="Specify reason for squad status update..."
+              rows={2}
+              className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs"
+            />
             <div className="flex gap-3 mt-2">
               <button
                 onClick={() => setRemovingPlayer(null)}
@@ -1058,60 +878,11 @@ export const FranchiseConsole: React.FC = () => {
               <button
                 onClick={handleRemoveSquadPlayer}
                 disabled={isRemoving}
-                className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs"
+                className="flex-1 py-2.5 rounded-xl bg-rose-600 text-white font-bold text-xs"
               >
-                {isRemoving ? 'Removing...' : 'Confirm Safe Removal'}
+                {isRemoving ? 'Removing...' : 'Confirm Remove'}
               </button>
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* PLAYER DOSSIER MODAL */}
-      {selectedPlayerDossier && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
-          <div className="w-full max-w-md bg-slate-900 border-2 border-blue-500 rounded-3xl p-6 shadow-2xl flex flex-col gap-4 relative">
-            <button
-              onClick={() => setSelectedPlayerDossier(null)}
-              className="absolute top-5 right-5 text-slate-400 hover:text-white p-1"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <div className="flex items-center gap-3">
-              <div className="w-14 h-14 rounded-2xl overflow-hidden bg-slate-950 border border-slate-700 shrink-0">
-                {selectedPlayerDossier.photo_url ? (
-                  <img src={selectedPlayerDossier.photo_url} alt="" className="w-full h-full object-cover" />
-                ) : (
-                  <Users className="w-6 h-6 m-4 text-slate-600" />
-                )}
-              </div>
-              <div>
-                <h3 className="text-lg font-bold text-white">{selectedPlayerDossier.player_name}</h3>
-                <div className="text-xs text-slate-400 font-mono">
-                  Roll: {selectedPlayerDossier.roll_number} • {selectedPlayerDossier.branch}
-                </div>
-                <div className="text-xs text-amber-400 font-mono font-bold mt-0.5">
-                  {formatAcademicCategory(selectedPlayerDossier.bucket)}
-                </div>
-              </div>
-            </div>
-
-            <div className="p-3.5 rounded-2xl bg-slate-950 border border-slate-800 text-xs flex flex-col gap-1.5">
-              <div><strong>Role:</strong> {selectedPlayerDossier.player_type || 'Player'}</div>
-              <div><strong>Batting:</strong> {selectedPlayerDossier.batting_style || 'Right Hand Bat'}</div>
-              <div><strong>Bowling:</strong> {selectedPlayerDossier.bowling_style || 'None'}</div>
-              {selectedPlayerDossier.mobile_number && (
-                <div><strong>Contact:</strong> {selectedPlayerDossier.mobile_number}</div>
-              )}
-            </div>
-
-            <button
-              onClick={() => setSelectedPlayerDossier(null)}
-              className="py-2.5 rounded-xl bg-slate-800 text-white font-bold text-xs"
-            >
-              Close
-            </button>
           </div>
         </div>
       )}

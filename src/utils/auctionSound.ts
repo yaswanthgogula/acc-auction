@@ -31,9 +31,6 @@ class AuctionSoundEngine {
     }
   }
 
-  /**
-   * Authentic wooden gavel hammer strike
-   */
   public playGavelStrike() {
     const ctx = this.getContext();
     if (!ctx) return;
@@ -56,7 +53,7 @@ class AuctionSoundEngine {
       osc.start(now);
       osc.stop(now + 0.16);
 
-      // Noise click for the sharp wooden impact contact
+      // Noise click
       const bufferSize = ctx.sampleRate * 0.04;
       const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
       const data = buffer.getChannelData(0);
@@ -83,16 +80,13 @@ class AuctionSoundEngine {
     } catch {}
   }
 
-  /**
-   * Energetic paddle raise / bid placed chime
-   */
   public playBidChime() {
     const ctx = this.getContext();
     if (!ctx) return;
 
     try {
       const now = ctx.currentTime;
-      const freqs = [587.33, 880]; // D5, A5 uplifting chime
+      const freqs = [587.33, 880];
 
       freqs.forEach((freq, idx) => {
         const osc = ctx.createOscillator();
@@ -112,9 +106,6 @@ class AuctionSoundEngine {
     } catch {}
   }
 
-  /**
-   * Ticking countdown alert during final seconds
-   */
   public playTimerBeep(isCritical: boolean = false) {
     const ctx = this.getContext();
     if (!ctx) return;
@@ -137,16 +128,13 @@ class AuctionSoundEngine {
     } catch {}
   }
 
-  /**
-   * Victory fanfare when player is hammered SOLD
-   */
   public playSoldCelebration() {
     const ctx = this.getContext();
     if (!ctx) return;
 
     try {
       const now = ctx.currentTime;
-      const notes = [523.25, 659.25, 783.99, 1046.5]; // C5, E5, G5, C6 major arpeggio
+      const notes = [523.25, 659.25, 783.99, 1046.5];
 
       notes.forEach((freq, idx) => {
         const osc = ctx.createOscillator();

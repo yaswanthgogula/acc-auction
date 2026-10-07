@@ -21,8 +21,6 @@ import {
   savePlayerToCloudSql,
   saveFranchiseToCloudSql,
   saveUserToCloudSql,
-  saveSquadMemberToCloudSql,
-  saveSaleToCloudSql,
 } from './cloudsql-sync';
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
@@ -50,7 +48,6 @@ export async function initDatabase(): Promise<Database> {
   instance.run('PRAGMA foreign_keys = ON;');
   createSchema(instance);
 
-  // Safe non-destructive schema migrations
   const alterStatements = [
     'ALTER TABLE franchises ADD COLUMN faculty_branch TEXT;',
     'ALTER TABLE franchises ADD COLUMN faculty_mobile TEXT;',
@@ -99,6 +96,16 @@ export async function initDatabase(): Promise<Database> {
     'ALTER TABLE players ADD COLUMN referral_status TEXT DEFAULT "NONE";',
     'ALTER TABLE players ADD COLUMN referral_verified_at INTEGER;',
     'ALTER TABLE players ADD COLUMN referral_verified_by TEXT;',
+    'ALTER TABLE players ADD COLUMN is_detained INTEGER DEFAULT 0;',
+    'ALTER TABLE players ADD COLUMN registration_phase INTEGER DEFAULT 1;',
+    'ALTER TABLE players ADD COLUMN approval_status TEXT DEFAULT "PENDING";',
+    'ALTER TABLE players ADD COLUMN rejection_reason TEXT;',
+    'ALTER TABLE players ADD COLUMN auction_session INTEGER DEFAULT 1;',
+    'ALTER TABLE players ADD COLUMN random_identifier TEXT;',
+    'ALTER TABLE editions ADD COLUMN active_session INTEGER DEFAULT 1;',
+    'ALTER TABLE editions ADD COLUMN session_state TEXT DEFAULT "SESSION_1_ACTIVE";',
+    'ALTER TABLE auction_lots ADD COLUMN random_identifier TEXT;',
+    'ALTER TABLE auction_lots ADD COLUMN auction_session INTEGER DEFAULT 1;',
     'ALTER TABLE squad_members ADD COLUMN status TEXT DEFAULT "ACTIVE";',
     'ALTER TABLE squad_members ADD COLUMN removed_at INTEGER;',
     'ALTER TABLE squad_members ADD COLUMN removed_by TEXT;',
@@ -113,7 +120,6 @@ export async function initDatabase(): Promise<Database> {
 
   await bootstrapSuperAdmin(instance);
 
-  // Synchronize with Supabase Cloud Postgres on boot
   try {
     await initCloudSql();
     const cloudData = await loadCloudSqlData();
@@ -122,8 +128,8 @@ export async function initDatabase(): Promise<Database> {
       for (const ed of cloudData.editions) {
         try {
           instance.run(
-            'INSERT OR REPLACE INTO editions (id, name, year, status, created_at) VALUES (?, ?, ?, ?, ?)',
-            [ed.id, ed.name, ed.year, ed.status, ed.created_at]
+            'INSERT OR REPLACE INTO editions (id, name, year, status, active_session, session_state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [ed.id, ed.name, ed.year, ed.status, ed.active_session || 1, ed.session_state || 'SESSION_1_ACTIVE', ed.created_at]
           );
         } catch {}
       }
@@ -183,19 +189,21 @@ export async function initDatabase(): Promise<Database> {
               id, edition_id, roll_number, name, email, mobile_number, photo_url,
               program, branch, academic_year, bucket, skill, player_type,
               batting_style, bowling_style, batting_position, batting_hand, batting_playing_type, bowling_profile,
+              is_detained, registration_phase, approval_status, rejection_reason, auction_session, random_identifier,
               is_referred, referral_token, referred_by_captain_id, referred_by_captain_name,
               referring_franchise_id, referring_franchise_name, referral_status,
               cricheroes_url, stats_json, base_price,
               payment_status, registration_status, is_auction_eligible, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               p.id, p.edition_id || 'ED_ACC_2026', p.roll_number, p.name, p.email, p.mobile_number, p.photo_url,
               p.program, p.branch, p.academic_year, p.bucket, p.skill, p.player_type,
               p.batting_style, p.bowling_style, p.batting_position || null, p.batting_hand || null, p.batting_playing_type || null, p.bowling_profile || null,
+              p.is_detained || 0, p.registration_phase || 1, p.approval_status || 'PENDING', p.rejection_reason || null, p.auction_session || 1, p.random_identifier || null,
               p.is_referred || 0, p.referral_token || null, p.referred_by_captain_id || null, p.referred_by_captain_name || null,
               p.referring_franchise_id || null, p.referring_franchise_name || null, p.referral_status || 'NONE',
               p.cricheroes_url, p.stats_json, p.base_price,
-              p.payment_status || 'REGISTERED', p.registration_status || 'REGISTERED', p.is_auction_eligible ?? 1, p.created_at, p.updated_at || Date.now()
+              p.payment_status || 'REGISTERED', p.registration_status || 'REGISTERED', p.is_auction_eligible ?? 0, p.created_at, p.updated_at || Date.now()
             ]
           );
         } catch {}
@@ -272,6 +280,8 @@ function createSchema(db: Database) {
       name TEXT NOT NULL,
       year INTEGER NOT NULL,
       status TEXT NOT NULL DEFAULT 'ACTIVE',
+      active_session INTEGER DEFAULT 1,
+      session_state TEXT DEFAULT 'SESSION_1_ACTIVE',
       created_at INTEGER NOT NULL
     );
 
@@ -364,7 +374,13 @@ function createSchema(db: Database) {
       base_price INTEGER,
       payment_status TEXT NOT NULL DEFAULT 'REGISTERED',
       registration_status TEXT NOT NULL DEFAULT 'REGISTERED',
-      is_auction_eligible INTEGER NOT NULL DEFAULT 1,
+      registration_phase INTEGER DEFAULT 1,
+      approval_status TEXT DEFAULT 'PENDING',
+      rejection_reason TEXT,
+      is_auction_eligible INTEGER NOT NULL DEFAULT 0,
+      is_detained INTEGER DEFAULT 0,
+      auction_session INTEGER DEFAULT 1,
+      random_identifier TEXT,
       ineligibility_reasons TEXT,
       is_editing_blocked INTEGER NOT NULL DEFAULT 0,
       is_detained_override INTEGER NOT NULL DEFAULT 0,
@@ -424,6 +440,8 @@ function createSchema(db: Database) {
       player_id TEXT NOT NULL,
       draw_number INTEGER,
       draw_mode TEXT NOT NULL DEFAULT 'AUTO',
+      random_identifier TEXT,
+      auction_session INTEGER DEFAULT 1,
       lot_state TEXT NOT NULL DEFAULT 'AVAILABLE',
       opening_price INTEGER NOT NULL,
       current_price INTEGER NOT NULL,
@@ -512,16 +530,6 @@ function createSchema(db: Database) {
       timestamp INTEGER NOT NULL
     );
 
-    CREATE TABLE IF NOT EXISTS bucket_relaxations (
-      id TEXT PRIMARY KEY,
-      edition_id TEXT NOT NULL,
-      bucket TEXT NOT NULL,
-      previous_minimum INTEGER NOT NULL,
-      new_minimum INTEGER NOT NULL,
-      actor TEXT NOT NULL,
-      timestamp INTEGER NOT NULL
-    );
-
     CREATE TABLE IF NOT EXISTS notifications (
       id TEXT PRIMARY KEY,
       edition_id TEXT NOT NULL,
@@ -593,8 +601,8 @@ async function bootstrapSuperAdmin(db: Database) {
 
   if (editionCount === 0) {
     db.run(
-      'INSERT INTO editions (id, name, year, status, created_at) VALUES (?, ?, ?, ?, ?)',
-      [editionId, 'ACC 2026', 2026, 'ACTIVE', now]
+      'INSERT INTO editions (id, name, year, status, active_session, session_state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [editionId, 'ACC 2026', 2026, 'ACTIVE', 1, 'SESSION_1_ACTIVE', now]
     );
   }
 }
@@ -644,7 +652,7 @@ export function executeTransaction(fn: () => void): void {
   }
 }
 
-export function resetSystemData(actorUsername: string = 'SuperAdmin'): void {
+export async function resetSystemData(actorUsername: string = 'SuperAdmin'): Promise<void> {
   if (!db) return;
   executeTransaction(() => {
     execute('DELETE FROM bids;');
@@ -654,11 +662,12 @@ export function resetSystemData(actorUsername: string = 'SuperAdmin'): void {
     execute('DELETE FROM auction_lots;');
     execute('DELETE FROM referral_tokens;');
     execute('DELETE FROM referrals;');
+    execute('DELETE FROM notifications;');
     execute('DELETE FROM players;');
-    execute('DELETE FROM franchises;');
-    execute('DELETE FROM bucket_relaxations;');
     execute('DELETE FROM audit_logs;');
     execute("DELETE FROM users WHERE role NOT IN ('SUPER_ADMIN', 'ADMIN');");
+    execute('DELETE FROM franchises;');
+    execute("UPDATE editions SET active_session = 1, session_state = 'SESSION_1_ACTIVE', status = 'ACTIVE' WHERE id = 'ED_ACC_2026';");
 
     const now = Date.now();
     execute(
@@ -677,8 +686,12 @@ export function resetSystemData(actorUsername: string = 'SuperAdmin'): void {
       ]
     );
   });
+
+  await bootstrapSuperAdmin(db);
+
   removeAllPlayersFromCloudSql().catch(() => {});
   removeAllFranchisesFromCloudSql().catch(() => {});
+  saveDatabaseToDisk();
 }
 
 export function deleteSinglePlayer(playerId: string, actorUsername: string = 'Admin'): void {
@@ -862,11 +875,7 @@ export async function seedDefaultAvanthiData(
   const fRes = targetDb.exec("SELECT COUNT(*) as count FROM franchises WHERE edition_id = 'ED_ACC_2026'");
   const fCount = fRes.length > 0 && fRes[0].values.length > 0 ? (fRes[0].values[0][0] as number) : 0;
 
-  const pRes = targetDb.exec("SELECT COUNT(*) as count FROM players WHERE edition_id = 'ED_ACC_2026'");
-  const pCount = pRes.length > 0 && pRes[0].values.length > 0 ? (pRes[0].values[0][0] as number) : 0;
-
   let seededFranchises = 0;
-  let seededPlayers = 0;
 
   if (!hasRemovedFranchises && (fCount === 0 || force)) {
     if (force) {
@@ -1026,5 +1035,5 @@ export async function seedDefaultAvanthiData(
   }
 
   saveDatabaseToDisk();
-  return { franchisesCount: seededFranchises, playersCount: seededPlayers };
+  return { franchisesCount: seededFranchises, playersCount: 0 };
 }

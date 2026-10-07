@@ -2,12 +2,6 @@
  * ============================================================================
  * ACC OFFICIAL 11 FRANCHISES PUBLIC DIRECTORY & ROSTERS
  * ============================================================================
- * Displays:
- * - Official 11 Franchises with War Chests and Quotas
- * - Faculty Coordinator Details (Name, Branch, Mobile)
- * - Captain Details & Full Career Cricket Statistics ("What they are") accessible to everyone
- * - Vice-Captain Details & Career Cricket Statistics
- * - Acquired Squad Rosters
  */
 
 import React, { useState } from 'react';
@@ -29,22 +23,7 @@ import {
 export const FranchisesList: React.FC<{ onNavigate: (route: string) => void }> = ({ onNavigate }) => {
   const { franchises } = useAuction();
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [selectedLeaderModal, setSelectedLeaderModal] = useState<{
-    franchiseName: string;
-    franchiseId: string;
-    leaderType: 'CAPTAIN' | 'VICE_CAPTAIN';
-    name: string;
-    roll?: string;
-    mobile?: string;
-    branch?: string;
-    year?: string;
-    skill?: string;
-    specialty?: string;
-    battingStyle?: string;
-    bowlingStyle?: string;
-    cricheroesUrl?: string;
-    stats?: any;
-  } | null>(null);
+  const [selectedLeaderModal, setSelectedLeaderModal] = useState<any | null>(null);
 
   const openLeaderStats = (f: any, leaderType: 'CAPTAIN' | 'VICE_CAPTAIN') => {
     const isCap = leaderType === 'CAPTAIN';
@@ -137,7 +116,7 @@ export const FranchisesList: React.FC<{ onNavigate: (route: string) => void }> =
                   )}
                 </div>
 
-                {/* Captain Section with "What they are" and clickable stats dossier */}
+                {/* Captain Section */}
                 <div className="p-3.5 rounded-xl bg-slate-950/90 border border-amber-500/40 flex flex-col gap-2 text-xs mb-3 shadow-inner">
                   <div className="flex items-center justify-between">
                     <span className="text-amber-400 font-bold flex items-center gap-1 text-xs">
@@ -154,69 +133,17 @@ export const FranchisesList: React.FC<{ onNavigate: (route: string) => void }> =
                     {f.captain_name || 'Designated Captain'}
                   </div>
 
-                  {/* "Mention what they are" banner */}
                   <div className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 text-[11px] font-bold">
                     <Zap className="w-3 h-3 text-amber-400 shrink-0" />
                     <span>Role: {f.captain_specialty || capStats.specialty || f.captain_skill || 'Captain & Core Athlete'}</span>
                   </div>
 
-                  {/* Inline Stats Preview */}
-                  <div className="grid grid-cols-4 gap-1 text-center font-mono text-[9px] bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
-                    <div>
-                      <span className="text-slate-500 block">Matches</span>
-                      <strong className="text-white">{capStats.matches ?? '-'}</strong>
-                    </div>
-                    <div>
-                      <span className="text-slate-500 block">Runs</span>
-                      <strong className="text-amber-300">{capStats.runs ?? '-'}</strong>
-                    </div>
-                    <div>
-                      <span className="text-slate-500 block">Wkts</span>
-                      <strong className="text-cyan-300">{capStats.wickets ?? '-'}</strong>
-                    </div>
-                    <div>
-                      <span className="text-slate-500 block">Top</span>
-                      <strong className="text-emerald-300">{capStats.highestScore ?? '-'}</strong>
-                    </div>
-                  </div>
-
-                  {/* Button to open complete stats (available to everyone) */}
                   <button
                     onClick={() => openLeaderStats(f, 'CAPTAIN')}
                     className="w-full py-1.5 px-2.5 rounded-lg bg-amber-500/20 hover:bg-amber-500 text-amber-300 hover:text-slate-950 border border-amber-500/40 text-[11px] font-bold transition flex items-center justify-center gap-1.5 cursor-pointer"
                   >
                     <Activity className="w-3 h-3" />
                     <span>View Captain Career Stats & Bio →</span>
-                  </button>
-                </div>
-
-                {/* Vice Captain Box */}
-                <div className="p-3 rounded-xl bg-slate-950/90 border border-blue-500/30 flex flex-col gap-2 text-xs mb-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-blue-400 font-bold flex items-center gap-1 text-[11px]">
-                      <Shield className="w-3.5 h-3.5 text-blue-400" /> Vice-Captain:
-                    </span>
-                    {f.vice_captain_roll && (
-                      <span className="text-[10px] font-mono text-cyan-300 bg-cyan-950/60 px-1.5 py-0.5 rounded border border-cyan-800/50">
-                        {f.vice_captain_roll}
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="font-bold text-white pl-1">
-                    {f.vice_captain_name || 'Designated Vice-Captain'}
-                  </div>
-
-                  <div className="text-[10px] text-cyan-300 px-2 py-0.5 rounded bg-blue-950/60 border border-blue-900/60">
-                    Role: {f.vice_captain_specialty || vcStats.specialty || f.vice_captain_skill || 'All-Rounder'}
-                  </div>
-
-                  <button
-                    onClick={() => openLeaderStats(f, 'VICE_CAPTAIN')}
-                    className="w-full py-1 px-2 rounded-lg bg-blue-600/20 hover:bg-blue-600 text-blue-300 hover:text-white border border-blue-500/30 text-[10px] font-bold transition flex items-center justify-center gap-1 cursor-pointer"
-                  >
-                    <Activity className="w-3 h-3" />
-                    <span>View Vice-Captain Stats</span>
                   </button>
                 </div>
 
@@ -267,13 +194,12 @@ export const FranchisesList: React.FC<{ onNavigate: (route: string) => void }> =
         })}
       </div>
 
-      {/* MODAL: FULL CAPTAIN / LEADER CAREER STATS (ACCESSIBLE TO EVERYONE) */}
       {selectedLeaderModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
           <div className="w-full max-w-lg bg-slate-900 border-2 border-amber-500 rounded-3xl p-6 shadow-2xl flex flex-col gap-4 relative">
             <button
               onClick={() => setSelectedLeaderModal(null)}
-              className="absolute top-5 right-5 text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition cursor-pointer"
+              className="absolute top-5 right-5 text-slate-400 hover:text-white p-1 rounded-lg"
             >
               <X className="w-5 h-5" />
             </button>
@@ -284,101 +210,34 @@ export const FranchisesList: React.FC<{ onNavigate: (route: string) => void }> =
               </div>
               <div>
                 <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-amber-400">
-                  {selectedLeaderModal.franchiseName} • {selectedLeaderModal.leaderType === 'CAPTAIN' ? 'Captain Profile' : 'Vice-Captain Profile'}
+                  {selectedLeaderModal.franchiseName} • Captain Profile
                 </span>
                 <h3 className="text-2xl font-black text-white font-heading leading-tight">
                   {selectedLeaderModal.name}
                 </h3>
-                {selectedLeaderModal.roll && (
-                  <div className="text-xs text-cyan-300 font-mono">
-                    Roll No: {selectedLeaderModal.roll} {selectedLeaderModal.branch && `• Dept: ${selectedLeaderModal.branch}`}
-                  </div>
-                )}
               </div>
             </div>
 
-            {/* "Mention what they are" highlighted banner */}
-            <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/40 text-amber-200 text-xs flex flex-col gap-1">
-              <span className="text-[10px] uppercase font-bold text-amber-400 font-mono tracking-wider">
-                Playing Discipline & Specialty ("What They Are"):
-              </span>
-              <span className="text-sm font-black text-white">
-                {selectedLeaderModal.specialty || selectedLeaderModal.skill || 'Team Leader & Core Athlete'}
-              </span>
-            </div>
-
-            {/* Batting & Bowling Styles */}
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
-                <span className="text-slate-400 text-[10px] block">Batting Style</span>
-                <strong className="text-white text-xs">{selectedLeaderModal.battingStyle || 'Right Hand Bat'}</strong>
-              </div>
-              <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
-                <span className="text-slate-400 text-[10px] block">Bowling Style</span>
-                <strong className="text-white text-xs">{selectedLeaderModal.bowlingStyle || 'Right Arm Medium'}</strong>
-              </div>
-            </div>
-
-            {/* Official Career Statistics Table */}
-            <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 flex flex-col gap-2.5">
-              <span className="text-xs font-bold text-slate-300 uppercase font-mono tracking-wider">
+            <div className="p-3.5 rounded-2xl bg-slate-950 border border-slate-800 flex flex-col gap-2">
+              <span className="text-[10px] uppercase font-bold text-slate-400 font-mono tracking-wider">
                 Career Cricket Performance Statistics
               </span>
 
-              <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 text-center font-mono text-xs">
+              <div className="grid grid-cols-3 gap-2 text-center font-mono text-xs">
                 <div className="p-2 rounded-lg bg-slate-900 border border-slate-800">
                   <div className="text-[10px] text-slate-400">MATCHES</div>
-                  <div className="text-base font-black text-white mt-0.5">{selectedLeaderModal.stats?.matches || 0}</div>
+                  <div className="text-base font-black text-white">{selectedLeaderModal.stats?.matches || 0}</div>
                 </div>
-
                 <div className="p-2 rounded-lg bg-slate-900 border border-slate-800">
                   <div className="text-[10px] text-slate-400">RUNS</div>
-                  <div className="text-base font-black text-amber-400 mt-0.5">{selectedLeaderModal.stats?.runs || 0}</div>
+                  <div className="text-base font-black text-amber-400">{selectedLeaderModal.stats?.runs || 0}</div>
                 </div>
-
                 <div className="p-2 rounded-lg bg-slate-900 border border-slate-800">
                   <div className="text-[10px] text-slate-400">WICKETS</div>
-                  <div className="text-base font-black text-cyan-400 mt-0.5">{selectedLeaderModal.stats?.wickets || 0}</div>
-                </div>
-
-                <div className="p-2 rounded-lg bg-slate-900 border border-slate-800">
-                  <div className="text-[10px] text-slate-400">TOP SCORE</div>
-                  <div className="text-sm font-bold text-emerald-400 mt-0.5">{selectedLeaderModal.stats?.highestScore || '-'}</div>
-                </div>
-
-                <div className="p-2 rounded-lg bg-slate-900 border border-slate-800">
-                  <div className="text-[10px] text-slate-400">BAT AVG</div>
-                  <div className="text-sm font-bold text-slate-200 mt-0.5">{selectedLeaderModal.stats?.battingAverage || '-'}</div>
-                </div>
-
-                <div className="p-2 rounded-lg bg-slate-900 border border-slate-800">
-                  <div className="text-[10px] text-slate-400">STRIKE RATE</div>
-                  <div className="text-sm font-bold text-slate-200 mt-0.5">{selectedLeaderModal.stats?.strikeRate || '-'}</div>
-                </div>
-
-                <div className="p-2 rounded-lg bg-slate-900 border border-slate-800">
-                  <div className="text-[10px] text-slate-400">BEST BOWL</div>
-                  <div className="text-sm font-bold text-slate-200 mt-0.5">{selectedLeaderModal.stats?.bestBowling || '-'}</div>
-                </div>
-
-                <div className="p-2 rounded-lg bg-slate-900 border border-slate-800">
-                  <div className="text-[10px] text-slate-400">ECONOMY</div>
-                  <div className="text-sm font-bold text-slate-200 mt-0.5">{selectedLeaderModal.stats?.economy || '-'}</div>
+                  <div className="text-base font-black text-cyan-400">{selectedLeaderModal.stats?.wickets || 0}</div>
                 </div>
               </div>
             </div>
-
-            {selectedLeaderModal.cricheroesUrl && (
-              <a
-                href={selectedLeaderModal.cricheroesUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold flex items-center justify-center gap-1.5 transition"
-              >
-                <span>View CricHeroes Career Profile</span>
-                <ExternalLink className="w-3.5 h-3.5 text-slate-400" />
-              </a>
-            )}
 
             <button
               onClick={() => setSelectedLeaderModal(null)}

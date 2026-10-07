@@ -4,6 +4,7 @@
  * ============================================================================
  * Runs on Port 3000. Mounts Vite middleware in dev mode.
  * Real SQL Relational Database + Server-Authoritative Live Auction Engine.
+ * Implements the 11 strict modifications while preserving all baseline features.
  */
 
 import express, { Request, Response } from 'express';
@@ -34,7 +35,7 @@ import {
   saveSquadMemberToCloudSql,
   getDatabaseDiagnostics,
 } from './src/server/cloudsql-sync';
-import { formatAcademicCategory } from './src/utils/academicCategories';
+import { formatAcademicCategory, deriveEffectiveBucket, STRICT_BUCKET_AUCTION_ORDER } from './src/utils/academicCategories';
 
 const PORT = 3000;
 const app = express();
@@ -54,6 +55,9 @@ app.use(
 app.use(express.json({ limit: '15mb' }));
 app.use(express.urlencoded({ extended: true, limit: '15mb' }));
 
+// In-memory OTP storage for Two-Phase Registration (Requirement 9)
+const activeOtps: Map<string, { code: string; expiresAt: number }> = new Map();
+
 function generateFranchisePassword(teamName: string): string {
   const clean = teamName.replace(/[^a-zA-Z]/g, '').slice(0, 5) || 'ACC';
   const capitalized = clean.charAt(0).toUpperCase() + clean.slice(1).toLowerCase();
@@ -67,6 +71,8 @@ app.get('/api/health', (req: Request, res: Response) => {
     port: PORT,
     timestamp: Date.now(),
     edition: 'Avanthi Cricket Carnival (ACC)',
+    activeSession: auctionManager.getActiveSession(),
+    sessionState: auctionManager.getSessionState(),
   });
 });
 
@@ -101,7 +107,163 @@ app.get('/api/tests/run', (req: Request, res: Response) => {
 });
 
 /* ============================================================================
- * AUTHENTICATION ROUTES
+ * OTP VERIFICATION ROUTES (Requirement 9: Two-Phase Registration)
+ * ============================================================================ */
+
+app.post('/api/auth/send-otp', (req: Request, res: Response) => {
+  try {
+    const { mobile } = req.body;
+    if (!mobile || mobile.trim().length < 10) {
+      return res.status(400).json({ success: false, error: 'A valid 10-digit mobile number is required.' });
+    }
+    const cleanMobile = mobile.replace(/[\s-+]/g, '');
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    activeOtps.set(cleanMobile, {
+      code,
+      expiresAt: Date.now() + 10 * 60 * 1000,
+    });
+
+    res.json({
+      success: true,
+      message: `OTP sent successfully to ${cleanMobile}. (For testing/demo: ${code})`,
+      demoCode: code,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/auth/verify-otp', (req: Request, res: Response) => {
+  try {
+    const { mobile, otp } = req.body;
+    if (!mobile || !otp) {
+      return res.status(400).json({ success: false, error: 'Mobile number and OTP code required.' });
+    }
+    const cleanMobile = mobile.replace(/[\s-+]/g, '');
+    const record = activeOtps.get(cleanMobile);
+
+    if (!record) {
+      return res.status(400).json({ success: false, error: 'No OTP requested for this mobile number or it has expired.' });
+    }
+    if (Date.now() > record.expiresAt) {
+      activeOtps.delete(cleanMobile);
+      return res.status(400).json({ success: false, error: 'OTP has expired. Please request a new one.' });
+    }
+    if (record.code !== otp.trim()) {
+      return res.status(400).json({ success: false, error: 'Incorrect OTP code entered.' });
+    }
+
+    activeOtps.delete(cleanMobile);
+    res.json({ success: true, message: 'Mobile number successfully verified with OTP.' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/* ============================================================================
+ * FORGOT PASSWORD WITH MOBILE OTP (Requirement 1)
+ * ============================================================================ */
+
+app.post('/api/auth/forgot-password/send-otp', (req: Request, res: Response) => {
+  try {
+    const { identifier } = req.body;
+    if (!identifier || !identifier.trim()) {
+      return res.status(400).json({ success: false, error: 'College Roll Number or Registered Mobile Number is required.' });
+    }
+
+    const cleanInput = identifier.trim().toLowerCase();
+    const cleanMobile = identifier.replace(/[\s-+]/g, '');
+
+    const player = queryOne(
+      `SELECT * FROM players WHERE LOWER(roll_number) = ? OR mobile_number = ? LIMIT 1`,
+      [cleanInput, cleanMobile]
+    );
+
+    if (!player) {
+      return res.status(404).json({ success: false, error: 'No registered player found with this Roll Number or Mobile Number.' });
+    }
+
+    if (!player.mobile_number) {
+      return res.status(400).json({ success: false, error: 'No mobile number associated with this player account.' });
+    }
+
+    const targetMobile = player.mobile_number;
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    activeOtps.set(targetMobile, {
+      code,
+      expiresAt: Date.now() + 10 * 60 * 1000,
+    });
+
+    res.json({
+      success: true,
+      message: `Password reset OTP generated and sent to mobile ending in ...${targetMobile.slice(-4)}.`,
+      mobile: targetMobile,
+      playerName: player.name,
+      rollNumber: player.roll_number,
+      demoCode: code,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/auth/forgot-password/reset', async (req: Request, res: Response) => {
+  try {
+    const { identifier, mobile, newPassword, confirmPassword } = req.body;
+    const targetIdentifier = (identifier || mobile || '').trim();
+    if (!targetIdentifier || !newPassword) {
+      return res.status(400).json({ success: false, error: 'College Roll Number or Mobile Number, and new password are required.' });
+    }
+
+    if (newPassword.length < 4) {
+      return res.status(400).json({ success: false, error: 'Password must be at least 4 characters long.' });
+    }
+
+    if (confirmPassword && newPassword !== confirmPassword) {
+      return res.status(400).json({ success: false, error: 'Passwords do not match.' });
+    }
+
+    const cleanInput = targetIdentifier.toLowerCase();
+    const cleanMobile = targetIdentifier.replace(/[\s-+]/g, '');
+
+    const player = queryOne(
+      `SELECT * FROM players WHERE LOWER(roll_number) = ? OR mobile_number = ? LIMIT 1`,
+      [cleanInput, cleanMobile]
+    );
+
+    if (!player) {
+      return res.status(404).json({ success: false, error: 'No registered player found with this Roll Number or Mobile Number.' });
+    }
+
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+    const now = Date.now();
+
+    execute(
+      `UPDATE users SET password_hash = ? WHERE player_id = ? OR LOWER(username) = ?`,
+      [passwordHash, player.id, player.roll_number.toLowerCase()]
+    );
+
+    saveUserToCloudSql({
+      id: `USR_${player.id}`,
+      username: player.roll_number,
+      password_hash: passwordHash,
+      role: 'PLAYER',
+      player_id: player.id,
+      updated_at: now,
+    }).catch(() => {});
+
+    res.json({
+      success: true,
+      message: 'Password successfully updated! You can now log in with your new password.',
+      rollNumber: player.roll_number,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/* ============================================================================
+ * AUTHENTICATION ROUTES (Google login completely removed - Requirement 4)
  * ============================================================================ */
 
 app.post('/api/auth/register-admin', async (req: Request, res: Response) => {
@@ -296,7 +458,884 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
 });
 
 /* ============================================================================
- * FRANCHISE ROUTES (Faculty Coordinator, Captain & Vice Captain Registration)
+ * TWO-PHASE PLAYER REGISTRATION (Requirement 9, 3, 8)
+ * ============================================================================ */
+
+app.post('/api/players/register-phase1', async (req: Request, res: Response) => {
+  try {
+    const { name, rollNumber, mobileNumber, mobile, password, referralToken, isDetained } = req.body;
+    const rawMobile = mobileNumber || mobile;
+
+    if (!name || !rollNumber || !rawMobile || !password) {
+      return res.status(400).json({ success: false, error: 'Player Name, Roll Number, Mobile Number, and Password are required.' });
+    }
+
+    const cleanRoll = rollNumber.trim().toUpperCase();
+    const cleanMobile = rawMobile.replace(/[\s-+]/g, '');
+
+    const dupRoll = queryOne('SELECT id FROM players WHERE roll_number = ?', [cleanRoll]);
+    if (dupRoll) {
+      return res.status(400).json({ success: false, error: `DUPLICATE_ROLL: Roll number '${cleanRoll}' is already registered.` });
+    }
+
+    const dupMobile = queryOne('SELECT id FROM players WHERE mobile_number = ?', [cleanMobile]);
+    if (dupMobile) {
+      return res.status(400).json({ success: false, error: `DUPLICATE_MOBILE: Mobile number '${cleanMobile}' is already registered.` });
+    }
+
+    let isReferredPlayer = false;
+    let validReferralRecord: any = null;
+
+    if (referralToken && referralToken.trim()) {
+      validReferralRecord = queryOne(
+        `SELECT * FROM referral_tokens WHERE token = ? AND status = 'ACTIVE'`,
+        [referralToken.trim()]
+      );
+      if (validReferralRecord) {
+        isReferredPlayer = true;
+      }
+    }
+
+    const playerId = `PL_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const now = Date.now();
+    const passwordHash = await bcrypt.hash(password, 10);
+    const cleanEmail = `${cleanRoll.toLowerCase()}@avanthi.edu.in`;
+
+    const detainedFlag = isDetained === true || isDetained === 1 || isDetained === '1';
+    const parsed = RegistrationPipeline.parseRollNumber(cleanRoll);
+    const derivedYear = parsed.admissionYY ? RegistrationPipeline.calculateAcademicYear(parsed.admissionYY, parsed.program || 'BTECH_REGULAR', 2026) : 1;
+    const initialBucket = RegistrationPipeline.deriveBucket(parsed.program || 'BTECH_REGULAR', derivedYear, detainedFlag) || 'B1';
+
+    executeTransaction(() => {
+      execute(
+        `INSERT INTO players (
+          id, edition_id, roll_number, name, email, mobile_number, photo_url,
+          program, branch, academic_year, bucket, skill, player_type,
+          registration_phase, approval_status, is_auction_eligible, is_detained, auction_session,
+          is_referred, referral_token, referred_by_captain_id, referred_by_captain_name,
+          referring_franchise_id, referring_franchise_name, referral_status,
+          payment_status, registration_status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          playerId,
+          'ED_ACC_2026',
+          cleanRoll,
+          name.trim(),
+          cleanEmail,
+          cleanMobile,
+          '',
+          parsed.program || 'BTECH_REGULAR',
+          parsed.branchName || 'General',
+          derivedYear,
+          initialBucket,
+          'ALL_ROUNDER',
+          'All-Rounder',
+          1,
+          'PENDING',
+          0,
+          detainedFlag ? 1 : 0,
+          1,
+          isReferredPlayer ? 1 : 0,
+          validReferralRecord ? validReferralRecord.token : null,
+          validReferralRecord ? validReferralRecord.captain_id : null,
+          validReferralRecord ? validReferralRecord.captain_name : null,
+          validReferralRecord ? validReferralRecord.franchise_id : null,
+          validReferralRecord ? validReferralRecord.franchise_name : null,
+          isReferredPlayer ? 'PENDING_ADMIN_APPROVAL' : 'NONE',
+          'REGISTERED',
+          'PHASE_1_COMPLETE',
+          now,
+          now,
+        ]
+      );
+
+      execute(
+        `INSERT INTO users (id, username, email, password_hash, role, player_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [`USR_${playerId}`, cleanRoll, cleanEmail, passwordHash, 'PLAYER', playerId, now]
+      );
+    });
+
+    saveUserToCloudSql({
+      id: `USR_${playerId}`,
+      username: cleanRoll,
+      email: cleanEmail,
+      password_hash: passwordHash,
+      role: 'PLAYER',
+      player_id: playerId,
+      created_at: now,
+    }).catch(() => {});
+
+    savePlayerToCloudSql({
+      id: playerId,
+      edition_id: 'ED_ACC_2026',
+      roll_number: cleanRoll,
+      name: name.trim(),
+      email: cleanEmail,
+      mobile_number: cleanMobile,
+      registration_phase: 1,
+      approval_status: 'PENDING',
+      is_auction_eligible: 0,
+      is_referred: isReferredPlayer ? 1 : 0,
+      referral_token: validReferralRecord ? validReferralRecord.token : null,
+      created_at: now,
+      updated_at: now,
+    }).catch(() => {});
+
+    res.json({
+      success: true,
+      playerId,
+      message: 'Phase 1 registration completed! Your account is created. Please log in to complete Phase 2 profile & cricket statistics.',
+      user: {
+        id: `USR_${playerId}`,
+        username: cleanRoll,
+        email: cleanEmail,
+        role: 'PLAYER',
+        playerId,
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/players/submit-phase2', async (req: Request, res: Response) => {
+  try {
+    const {
+      playerId,
+      photoUrl,
+      isDetained,
+      playerType: rawPlayerType,
+      role: rawRole,
+      skill: rawSkill,
+      battingPosition,
+      battingHand,
+      battingPlayingType,
+      battingStyle: rawBattingStyle,
+      bowlingProfile,
+      bowlingStyle: rawBowlingStyle,
+      stats,
+      cricheroesLink,
+      experience,
+      previousAcc,
+      basePrice: rawBasePrice,
+    } = req.body;
+
+    if (!playerId) {
+      return res.status(400).json({ success: false, error: 'Player ID is required.' });
+    }
+
+    const player = queryOne('SELECT * FROM players WHERE id = ?', [playerId]);
+    if (!player) {
+      return res.status(404).json({ success: false, error: 'Player account not found.' });
+    }
+
+    if (!photoUrl) {
+      return res.status(400).json({ success: false, error: 'Player photo is required to complete Phase 2.' });
+    }
+
+    const detainedFlag = isDetained === true || isDetained === 1 || isDetained === '1';
+    const effective = deriveEffectiveBucket(player.program, player.academic_year, detainedFlag);
+
+    const chosenRole = (rawPlayerType || rawRole || rawSkill || player.player_type || 'All-Rounder').toUpperCase();
+    const isWk = chosenRole.includes('WICKET') || chosenRole.includes('KEEPER');
+    const isBowl = (chosenRole === 'BOWLER' || (chosenRole.includes('BOWL') && !chosenRole.includes('ALL'))) && !isWk;
+    const isBat = (chosenRole === 'BATSMAN' || chosenRole === 'BATTER' || (chosenRole.includes('BAT') && !chosenRole.includes('ALL'))) && !isWk;
+
+    let resolvedSkill = 'ALL_ROUNDER';
+    let resolvedPlayerType = 'All-Rounder';
+    if (isWk) {
+      resolvedSkill = 'WICKET_KEEPER';
+      resolvedPlayerType = 'Wicket-Keeper';
+    } else if (isBowl) {
+      resolvedSkill = 'BOWLER';
+      resolvedPlayerType = 'Bowler';
+    } else if (isBat) {
+      resolvedSkill = 'BATSMAN';
+      resolvedPlayerType = 'Batter';
+    }
+
+    const battingStyle = rawBattingStyle || battingHand || 'Right Hand Bat';
+    const bowlingStyle = rawBowlingStyle || bowlingProfile || (isBat ? 'None' : 'Right-arm Medium');
+    const fullStats = {
+      ...(stats || {}),
+      battingStyle,
+      bowlingStyle,
+      battingPosition: battingPosition || null,
+      battingHand: battingHand || null,
+      battingPlayingType: battingPlayingType || null,
+      bowlingProfile: bowlingProfile || null,
+    };
+    const statsJson = JSON.stringify(fullStats);
+
+    let resolvedBasePrice: number | null = null;
+    if (player.is_referred !== 1 && rawBasePrice !== undefined && rawBasePrice !== null && rawBasePrice !== '') {
+      const parsedBp = parseInt(rawBasePrice, 10);
+      resolvedBasePrice = !isNaN(parsedBp) && parsedBp >= 20 ? parsedBp : 20;
+    }
+
+    const now = Date.now();
+
+    execute(
+      `UPDATE players
+       SET photo_url = ?, is_detained = ?, bucket = ?, skill = ?, player_type = ?,
+           batting_style = ?, bowling_style = ?, batting_position = ?, batting_hand = ?, batting_playing_type = ?, bowling_profile = ?,
+           stats_json = ?, cricheroes_url = ?, experience = ?, previous_acc = ?, base_price = ?,
+           registration_phase = 2, approval_status = 'PENDING', is_auction_eligible = 0,
+           registration_status = 'SUBMITTED_FOR_APPROVAL', updated_at = ?
+       WHERE id = ?`,
+      [
+        photoUrl,
+        detainedFlag ? 1 : 0,
+        effective.effectiveBucket,
+        resolvedSkill,
+        resolvedPlayerType,
+        battingStyle,
+        bowlingStyle,
+        battingPosition || null,
+        battingHand || null,
+        battingPlayingType || null,
+        bowlingProfile || null,
+        statsJson,
+        cricheroesLink || '',
+        experience || '',
+        previousAcc || '',
+        resolvedBasePrice,
+        now,
+        playerId,
+      ]
+    );
+
+    savePlayerToCloudSql({
+      ...player,
+      photo_url: photoUrl,
+      is_detained: detainedFlag ? 1 : 0,
+      bucket: effective.effectiveBucket,
+      skill: resolvedSkill,
+      player_type: resolvedPlayerType,
+      batting_style: battingStyle,
+      bowling_style: bowlingStyle,
+      stats_json: statsJson,
+      registration_phase: 2,
+      approval_status: 'PENDING',
+      is_auction_eligible: 0,
+      base_price: resolvedBasePrice,
+      updated_at: now,
+    }).catch(() => {});
+
+    auctionManager.broadcast('STATE_UPDATED', { reason: 'PLAYER_PHASE2_SUBMITTED', playerId });
+
+    res.json({
+      success: true,
+      message: 'Profile and cricket statistics submitted for Admin review. Your auction eligibility is pending approval.',
+      effectiveBucket: effective.effectiveBucket,
+      academicCategoryLabel: effective.label,
+      isDetained: detainedFlag,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// EDIT PLAYER PROFILE (Requirement 7: Player edit option with restrictions)
+app.put('/api/players/profile', async (req: Request, res: Response) => {
+  try {
+    const actorPlayerId = (req.headers['x-user-player-id'] as string) || req.body?.playerId;
+    const actorRole = (req.headers['x-user-role'] as string) || req.body?.role;
+
+    if (!actorPlayerId) {
+      return res.status(401).json({ success: false, error: 'Player authentication required.' });
+    }
+
+    const player = queryOne('SELECT * FROM players WHERE id = ?', [actorPlayerId]);
+    if (!player) {
+      return res.status(404).json({ success: false, error: 'Player profile not found.' });
+    }
+
+    const {
+      name,
+      mobileNumber,
+      email,
+      photoUrl,
+      isDetained,
+      playerType,
+      battingPosition,
+      battingHand,
+      battingPlayingType,
+      bowlingProfile,
+      cricheroesLink,
+      experience,
+      previousAcc,
+      stats,
+    } = req.body;
+
+    const detainedFlag = isDetained !== undefined
+      ? (isDetained === true || isDetained === 1 || isDetained === '1')
+      : (player.is_detained === 1);
+
+    const effective = deriveEffectiveBucket(player.program, player.academic_year, detainedFlag);
+
+    const fullStats = {
+      ...(stats || {}),
+      battingStyle: battingHand || player.batting_style,
+      bowlingStyle: bowlingProfile || player.bowling_style,
+      battingPosition: battingPosition || player.batting_position,
+      battingHand: battingHand || player.batting_hand,
+      battingPlayingType: battingPlayingType || player.batting_playing_type,
+      bowlingProfile: bowlingProfile || player.bowling_profile,
+    };
+    const statsJson = JSON.stringify(fullStats);
+    const now = Date.now();
+
+    execute(
+      `UPDATE players
+       SET name = COALESCE(?, name),
+           mobile_number = COALESCE(?, mobile_number),
+           email = COALESCE(?, email),
+           photo_url = COALESCE(?, photo_url),
+           is_detained = ?,
+           bucket = ?,
+           player_type = COALESCE(?, player_type),
+           batting_position = COALESCE(?, batting_position),
+           batting_hand = COALESCE(?, batting_hand),
+           batting_playing_type = COALESCE(?, batting_playing_type),
+           bowling_profile = COALESCE(?, bowling_profile),
+           cricheroes_url = COALESCE(?, cricheroes_url),
+           experience = COALESCE(?, experience),
+           previous_acc = COALESCE(?, previous_acc),
+           stats_json = ?,
+           updated_at = ?
+       WHERE id = ?`,
+      [
+        name ? name.trim() : null,
+        mobileNumber ? mobileNumber.trim() : null,
+        email ? email.trim() : null,
+        photoUrl || null,
+        detainedFlag ? 1 : 0,
+        effective.effectiveBucket,
+        playerType || null,
+        battingPosition || null,
+        battingHand || null,
+        battingPlayingType || null,
+        bowlingProfile || null,
+        cricheroesLink || null,
+        experience || null,
+        previousAcc || null,
+        statsJson,
+        now,
+        actorPlayerId,
+      ]
+    );
+
+    const updated = queryOne('SELECT * FROM players WHERE id = ?', [actorPlayerId]);
+    savePlayerToCloudSql(updated).catch(() => {});
+
+    auctionManager.broadcast('STATE_UPDATED', { reason: 'PLAYER_PROFILE_UPDATED', playerId: actorPlayerId });
+
+    res.json({
+      success: true,
+      message: 'Profile updated successfully and persisted to database.',
+      player: {
+        ...updated,
+        academicCategoryLabel: formatAcademicCategory(updated.bucket),
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/* ============================================================================
+ * ADMIN APPROVAL WORKFLOW (Requirement 8)
+ * ============================================================================ */
+
+app.get('/api/admin/pending-approvals', (req: Request, res: Response) => {
+  try {
+    const pending = queryAll(
+      `SELECT p.* FROM players p
+       WHERE p.approval_status = 'PENDING'
+       ORDER BY p.created_at DESC`
+    );
+    res.json({
+      success: true,
+      pending: pending.map((p) => ({
+        ...p,
+        academicCategoryLabel: formatAcademicCategory(p.bucket),
+      })),
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/admin/approve-player', (req: Request, res: Response) => {
+  try {
+    const { playerId, status, rejectionReason, basePrice, session, actor } = req.body;
+    if (!playerId) return res.status(400).json({ success: false, error: 'Player ID required.' });
+
+    const player = queryOne('SELECT * FROM players WHERE id = ?', [playerId]);
+    if (!player) return res.status(404).json({ success: false, error: 'Player not found.' });
+
+    const isApproved = status === 'APPROVED';
+    const isAuctionEligible = isApproved && player.is_referred !== 1 ? 1 : 0;
+    const now = Date.now();
+    const assignedSession = session ? parseInt(session, 10) : (player.auction_session || 1);
+
+    execute(
+      `UPDATE players
+       SET approval_status = ?,
+           is_auction_eligible = ?,
+           rejection_reason = ?,
+           base_price = COALESCE(?, base_price),
+           auction_session = ?,
+           updated_at = ?
+       WHERE id = ?`,
+      [
+        status || 'APPROVED',
+        isAuctionEligible,
+        status === 'REJECTED' ? rejectionReason || 'Profile does not meet tournament criteria' : null,
+        basePrice !== undefined ? parseInt(basePrice, 10) : player.base_price,
+        assignedSession,
+        now,
+        playerId,
+      ]
+    );
+
+    const updated = queryOne('SELECT * FROM players WHERE id = ?', [playerId]);
+    savePlayerToCloudSql(updated).catch(() => {});
+
+    auctionManager.broadcast('STATE_UPDATED', { reason: 'PLAYER_APPROVAL_STATUS_CHANGED', playerId, status });
+
+    res.json({
+      success: true,
+      message: `Player '${player.name}' has been ${status}. Auction eligibility: ${isAuctionEligible ? 'ELIGIBLE' : 'INELIGIBLE'}.`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/* ============================================================================
+ * TWO AUCTION SESSIONS MANAGEMENT (Requirement 11)
+ * ============================================================================ */
+
+app.post('/api/admin/session/control', async (req: Request, res: Response) => {
+  try {
+    const { session, action, editionId, actor } = req.body;
+    const edId = editionId || auctionManager.getActiveEdition()?.id || 'ED_ACC_2026';
+    const targetSession = session === 2 ? 2 : 1;
+
+    const result = await auctionManager.setAuctionSession(edId, targetSession, action || 'START', actor || 'SuperAdmin');
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/admin/session/assign-players', (req: Request, res: Response) => {
+  try {
+    const { playerIds, session, actor } = req.body;
+    if (!Array.isArray(playerIds) || playerIds.length === 0) {
+      return res.status(400).json({ success: false, error: 'List of player IDs required.' });
+    }
+    const targetSession = session === 2 ? 2 : 1;
+    const now = Date.now();
+
+    executeTransaction(() => {
+      for (const pid of playerIds) {
+        execute(
+          `UPDATE players SET auction_session = ?, updated_at = ? WHERE id = ?`,
+          [targetSession, now, pid]
+        );
+      }
+    });
+
+    auctionManager.broadcast('STATE_UPDATED', { reason: 'SESSION_ASSIGNMENTS_UPDATED', targetSession });
+
+    res.json({
+      success: true,
+      message: `Successfully assigned ${playerIds.length} players to Session ${targetSession}.`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/* ============================================================================
+ * EXISTING FULL REGISTRATION (Supports 1-step or combined registration)
+ * ============================================================================ */
+
+app.post('/api/players/register', async (req: Request, res: Response) => {
+  try {
+    const {
+      editionId: rawEditionId,
+      rollNumber,
+      name,
+      email,
+      mobileNumber: rawMobileNumber,
+      mobile,
+      photoUrl,
+      program,
+      branch,
+      role: rawRole,
+      playerType: rawPlayerType,
+      skill: rawSkill,
+      isDetained,
+      battingPosition,
+      battingHand,
+      battingPlayingType,
+      battingStyle: rawBattingStyle,
+      bowlingProfile,
+      bowlingStyle: rawBowlingStyle,
+      isWicketkeeper,
+      cricheroesLink,
+      stats,
+      basePrice: rawBasePrice,
+      password,
+      experience,
+      previousAcc,
+      referralToken,
+    } = req.body;
+
+    const editionId = rawEditionId || 'ED_ACC_2026';
+    const mobileNumber = rawMobileNumber || mobile;
+
+    if (!rollNumber || !name || !mobileNumber) {
+      return res.status(400).json({ success: false, error: 'Roll number, Name, and Mobile number are mandatory.' });
+    }
+
+    if (!photoUrl) {
+      return res.status(400).json({ success: false, error: 'MANDATORY_PHOTO: Player photograph is required to complete registration.' });
+    }
+
+    const cleanRoll = rollNumber.trim().toUpperCase();
+    const cleanMobile = mobileNumber.replace(/[\s-+]/g, '');
+
+    const dupRoll = queryOne('SELECT id FROM players WHERE edition_id = ? AND roll_number = ?', [editionId, cleanRoll]);
+    if (dupRoll) {
+      return res.status(400).json({ success: false, error: `DUPLICATE_ROLL: Roll number '${cleanRoll}' is already registered in this tournament.` });
+    }
+
+    const dupMobile = queryOne('SELECT id FROM players WHERE edition_id = ? AND mobile_number = ?', [editionId, cleanMobile]);
+    if (dupMobile) {
+      return res.status(400).json({ success: false, error: `DUPLICATE_MOBILE: Mobile number '${cleanMobile}' is already registered.` });
+    }
+
+    let isReferredPlayer = false;
+    let validReferralRecord: any = null;
+
+    if (referralToken && referralToken.trim()) {
+      validReferralRecord = queryOne(
+        `SELECT * FROM referral_tokens WHERE token = ? AND edition_id = ? AND status = 'ACTIVE'`,
+        [referralToken.trim(), editionId]
+      );
+      if (validReferralRecord) {
+        const referralCount = queryOne(
+          `SELECT COUNT(*) as count FROM players WHERE referring_franchise_id = ? AND is_referred = 1`,
+          [validReferralRecord.franchise_id]
+        );
+        if (referralCount && referralCount.count >= 5) {
+          return res.status(400).json({
+            success: false,
+            error: 'Maximum 5 referred players reached for this franchise captain.',
+          });
+        }
+        isReferredPlayer = true;
+      }
+    }
+
+    let resolvedBasePrice: number | null = null;
+    if (isReferredPlayer) {
+      resolvedBasePrice = null;
+    } else if (rawBasePrice !== undefined && rawBasePrice !== null && rawBasePrice !== '') {
+      const parsedBp = parseInt(rawBasePrice, 10);
+      resolvedBasePrice = !isNaN(parsedBp) && parsedBp >= 20 ? parsedBp : 20;
+    } else {
+      resolvedBasePrice = null;
+    }
+
+    const parsed = RegistrationPipeline.parseRollNumber(cleanRoll, program);
+    let derivedYear = 1;
+    let resolvedBranch = branch || 'General';
+
+    if (parsed.isValid && parsed.admissionYY !== undefined) {
+      derivedYear = RegistrationPipeline.calculateAcademicYear(parsed.admissionYY, parsed.program || 'BTECH_REGULAR', 2026);
+      resolvedBranch = parsed.branchName || resolvedBranch;
+    }
+
+    const detainedFlag = isDetained === true || isDetained === 1 || isDetained === '1';
+    const effective = deriveEffectiveBucket(parsed.program || program || 'BTECH_REGULAR', derivedYear, detainedFlag);
+
+    const chosenRole = (rawPlayerType || rawRole || rawSkill || '').toUpperCase();
+    const isWk = chosenRole.includes('WICKET') || chosenRole.includes('KEEPER') || !!isWicketkeeper;
+    const isBowl = (chosenRole === 'BOWLER' || (chosenRole.includes('BOWL') && !chosenRole.includes('ALL'))) && !isWk;
+    const isBat = (chosenRole === 'BATSMAN' || chosenRole === 'BATTER' || (chosenRole.includes('BAT') && !chosenRole.includes('ALL'))) && !isWk;
+
+    let resolvedSkill = 'ALL_ROUNDER';
+    let resolvedPlayerType = 'All-Rounder';
+
+    if (isWk) {
+      resolvedSkill = 'WICKET_KEEPER';
+      resolvedPlayerType = 'Wicket-Keeper';
+    } else if (isBowl) {
+      resolvedSkill = 'BOWLER';
+      resolvedPlayerType = 'Bowler';
+    } else if (isBat) {
+      resolvedSkill = 'BATSMAN';
+      resolvedPlayerType = 'Batter';
+    }
+
+    const battingStyle = rawBattingStyle || battingHand || 'Right Hand Bat';
+    const bowlingStyle = rawBowlingStyle || bowlingProfile || (isBat ? 'None' : 'Right-arm Medium');
+    const cricHeroesUrl = cricheroesLink || '';
+
+    const playerId = `PL_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const now = Date.now();
+
+    const fullStats = {
+      ...(stats || {}),
+      battingStyle,
+      bowlingStyle,
+      battingPosition: battingPosition || null,
+      battingHand: battingHand || null,
+      battingPlayingType: battingPlayingType || null,
+      bowlingProfile: bowlingProfile || null,
+    };
+    const statsJson = JSON.stringify(fullStats);
+    const passwordHash = await bcrypt.hash(password || 'player123', 10);
+    const cleanEmail = email && email.trim() ? email.trim() : `${cleanRoll.toLowerCase()}@avanthi.edu.in`;
+
+    const randomIdentifier = `PLAYER ID: ${'ABCDEFGHJKLMNPQRSTUVWXYZ'.charAt(Math.floor(Math.random() * 24))}${Math.floor(1000 + Math.random() * 9000)}`;
+
+    executeTransaction(() => {
+      execute(
+        `INSERT INTO players (
+          id, edition_id, roll_number, name, email, mobile_number, photo_url,
+          program, branch, academic_year, bucket, skill, player_type,
+          batting_style, bowling_style, batting_position, batting_hand, batting_playing_type, bowling_profile,
+          is_detained, registration_phase, approval_status, auction_session, random_identifier,
+          experience, previous_acc, cricheroes_url, cricheroes_mobile, cricheroes_status, stats_json, base_price,
+          payment_status, registration_status, is_auction_eligible, is_editing_blocked,
+          is_referred, referral_token, referred_by_captain_id, referred_by_captain_name,
+          referring_franchise_id, referring_franchise_name, referral_status,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          playerId,
+          editionId,
+          cleanRoll,
+          name.trim(),
+          cleanEmail,
+          cleanMobile,
+          photoUrl,
+          parsed.program || program || 'BTECH_REGULAR',
+          resolvedBranch,
+          derivedYear,
+          effective.effectiveBucket,
+          resolvedSkill,
+          resolvedPlayerType,
+          battingStyle,
+          bowlingStyle,
+          battingPosition || null,
+          battingHand || null,
+          battingPlayingType || null,
+          bowlingProfile || null,
+          detainedFlag ? 1 : 0,
+          2,
+          'PENDING',
+          1,
+          randomIdentifier,
+          experience || '',
+          previousAcc || '',
+          cricHeroesUrl || '',
+          cleanMobile,
+          'PROFILE_VERIFIED',
+          statsJson,
+          resolvedBasePrice,
+          'REGISTERED',
+          isReferredPlayer ? 'DIRECT_ASSIGNMENT' : 'SUBMITTED_FOR_APPROVAL',
+          0,
+          0,
+          isReferredPlayer ? 1 : 0,
+          validReferralRecord ? validReferralRecord.token : null,
+          validReferralRecord ? validReferralRecord.captain_id : null,
+          validReferralRecord ? validReferralRecord.captain_name : null,
+          validReferralRecord ? validReferralRecord.franchise_id : null,
+          validReferralRecord ? validReferralRecord.franchise_name : null,
+          isReferredPlayer ? 'PENDING_ADMIN_APPROVAL' : 'NONE',
+          now,
+          now,
+        ]
+      );
+
+      if (isReferredPlayer && validReferralRecord) {
+        execute(
+          `UPDATE referral_tokens
+           SET player_id = ?, player_name = ?, status = 'USED', verification_status = 'PENDING_ADMIN_APPROVAL'
+           WHERE token = ?`,
+          [playerId, name.trim(), validReferralRecord.token]
+        );
+
+        execute(
+          `INSERT INTO referrals (id, edition_id, franchise_id, player_id, status, created_at)
+           VALUES (?, ?, ?, ?, 'PENDING_ADMIN_APPROVAL', ?)`,
+          [`REF_${now}_${playerId}`, editionId, validReferralRecord.franchise_id, playerId, now]
+        );
+      }
+
+      execute(
+        `INSERT INTO users (id, username, email, password_hash, role, player_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [`USR_${playerId}`, cleanRoll, cleanEmail, passwordHash, 'PLAYER', playerId, now]
+      );
+    });
+
+    saveUserToCloudSql({
+      id: `USR_${playerId}`,
+      username: cleanRoll,
+      email: cleanEmail,
+      password_hash: passwordHash,
+      role: 'PLAYER',
+      player_id: playerId,
+      created_at: now,
+    }).catch(() => {});
+
+    savePlayerToCloudSql({
+      id: playerId,
+      edition_id: editionId,
+      roll_number: cleanRoll,
+      name: name.trim(),
+      email: cleanEmail,
+      mobile_number: cleanMobile,
+      photo_url: photoUrl,
+      program: parsed.program || program || 'BTECH_REGULAR',
+      branch: resolvedBranch,
+      academic_year: derivedYear,
+      bucket: effective.effectiveBucket,
+      skill: resolvedSkill,
+      player_type: resolvedPlayerType,
+      is_detained: detainedFlag ? 1 : 0,
+      registration_phase: 2,
+      approval_status: 'PENDING',
+      auction_session: 1,
+      random_identifier: randomIdentifier,
+      stats_json: statsJson,
+      base_price: resolvedBasePrice || 0,
+      is_auction_eligible: 0,
+      is_referred: isReferredPlayer ? 1 : 0,
+      referral_token: validReferralRecord ? validReferralRecord.token : null,
+      created_at: now,
+      updated_at: now,
+    }).catch(() => {});
+
+    auctionManager.broadcast('STATE_UPDATED', { reason: 'PLAYER_REGISTERED', playerId });
+
+    res.json({
+      success: true,
+      playerId,
+      derivedBucket: effective.effectiveBucket,
+      academicCategoryLabel: effective.label,
+      isDetained: detainedFlag,
+      playerType: resolvedPlayerType,
+      skill: resolvedSkill,
+      isReferred: isReferredPlayer,
+      basePrice: resolvedBasePrice,
+      message: isReferredPlayer
+        ? `Referred player registered! Directly assigned to franchise '${validReferralRecord.franchise_name}'.`
+        : 'Player registered successfully. Pending Administrator approval before auction eligibility.',
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/players', (req: Request, res: Response) => {
+  const edition = auctionManager.getActiveEdition();
+  const editionId = (req.query.editionId as string) || (edition ? edition.id : 'ED_ACC_2026');
+  const players = queryAll(
+    `SELECT p.*, f.name as franchise_name, f.logo_url as franchise_logo
+     FROM players p
+     LEFT JOIN squad_members sm ON p.id = sm.player_id AND (sm.status = 'ACTIVE' OR sm.status IS NULL) AND sm.undone = 0
+     LEFT JOIN franchises f ON sm.franchise_id = f.id
+     WHERE (? = '' OR p.edition_id = ? OR p.edition_id IS NULL)
+     ORDER BY p.roll_number ASC`,
+    [editionId, editionId]
+  );
+
+  const mapped = players.map((p) => {
+    let stats: any = {};
+    try {
+      if (p.stats_json) stats = JSON.parse(p.stats_json);
+    } catch {}
+    return {
+      ...p,
+      stats,
+      academicCategoryLabel: formatAcademicCategory(p.bucket),
+      batting_style: p.batting_style || p.batting_hand || stats.battingStyle || 'Right Hand Bat',
+      bowling_style: p.bowling_style || p.bowling_profile || stats.bowlingStyle || 'None',
+    };
+  });
+
+  res.setHeader('Cache-Control', 'public, max-age=5, stale-while-revalidate=20');
+  res.json({ success: true, players: mapped });
+});
+
+app.delete('/api/players/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const actorRole = (req.headers['x-user-role'] as string) || req.body?.role || (req.query?.role as string);
+    const actorId = (req.headers['x-user-id'] as string) || req.body?.userId || (req.query?.userId as string);
+    const actorUsername = (req.headers['x-user-username'] as string) || req.body?.username || 'Admin';
+
+    let isAuthorizedAdmin = actorRole === 'SUPER_ADMIN' || actorRole === 'ADMIN' || actorRole === 'OPERATOR';
+    if (!isAuthorizedAdmin && actorId) {
+      const user = queryOne('SELECT role, username FROM users WHERE id = ?', [actorId]);
+      if (user && (user.role === 'SUPER_ADMIN' || user.role === 'ADMIN' || user.role === 'OPERATOR')) {
+        isAuthorizedAdmin = true;
+      }
+    }
+
+    if (!isAuthorizedAdmin) {
+      return res.status(403).json({
+        success: false,
+        error: 'PERMISSION_DENIED: Only administrators have permission to delete players.',
+      });
+    }
+
+    const player = queryOne('SELECT * FROM players WHERE id = ?', [id]);
+    if (!player) {
+      return res.status(404).json({ success: false, error: 'Player not found in database.' });
+    }
+
+    deleteSinglePlayer(id, actorUsername);
+    auctionManager.broadcast('STATE_UPDATED', { reason: 'PLAYER_DELETED', playerId: id });
+
+    res.json({
+      success: true,
+      message: `Player '${player.name}' was completely and permanently deleted from the database by Admin.`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/* ============================================================================
+ * GUEST DRAW MODE (Requirement 5: Masked Identifiers)
+ * ============================================================================ */
+
+app.get('/api/auction/guest-draw-candidates', (req: Request, res: Response) => {
+  try {
+    const edition = auctionManager.getActiveEdition();
+    const editionId = (req.query.editionId as string) || (edition ? edition.id : 'ED_ACC_2026');
+    const candidates = auctionManager.getEligibleGuestDrawPlayers(editionId);
+    res.json({ success: true, candidates });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/* ============================================================================
+ * FRANCHISE ROUTES
  * ============================================================================ */
 
 app.get('/api/editions', (req: Request, res: Response) => {
@@ -312,8 +1351,6 @@ app.get('/api/franchises', (req: Request, res: Response) => {
   res.json({ success: true, franchises });
 });
 
-// CREATE / REGISTER FRANCHISE
-// Replaces Captain & Vice-Captain fields with: Name, Mobile, Role, and Stats based on role
 app.post('/api/franchises', async (req: Request, res: Response) => {
   try {
     const actorRole = (req.headers['x-user-role'] as string) || req.body?.role || (req.query?.role as string);
@@ -347,7 +1384,6 @@ app.post('/api/franchises', async (req: Request, res: Response) => {
       leaderMobile,
       customFranchiseId,
       customPassword,
-      // Franchise Statistics
       matchesPlayed,
       matchesWon,
       matchesLost,
@@ -362,7 +1398,6 @@ app.post('/api/franchises', async (req: Request, res: Response) => {
       pastRank,
       teamMotto,
       bestSeason,
-      // CAPTAIN: Name, Mobile Number, Player Role, and Stats based on role
       captainName,
       captainMobile,
       captainRole,
@@ -371,7 +1406,6 @@ app.post('/api/franchises', async (req: Request, res: Response) => {
       captainBattingStyle,
       captainBowlingStyle,
       captainStats,
-      // VICE CAPTAIN: Name, Mobile Number, Player Role, and Stats based on role
       viceCaptainName,
       viceCaptainMobile,
       viceCaptainRole,
@@ -518,23 +1552,6 @@ app.post('/api/franchises', async (req: Request, res: Response) => {
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [`USR_${franchiseId}`, username, `${username}@avanthi.edu.in`, passwordHash, 'FRANCHISE', franchiseId, now]
       );
-
-      execute(
-        `INSERT INTO audit_logs (id, edition_id, actor, role, action, entity, entity_id, new_state, reason, timestamp)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          `AUDIT_${now}_FRANCHISE_REG`,
-          effectiveEditionId,
-          actorUsername,
-          actorRole || 'ADMIN',
-          'REGISTER_FRANCHISE',
-          'FRANCHISES',
-          franchiseId,
-          JSON.stringify({ name, franchiseId, captainName, captainRole: resolvedCaptainRole, viceCaptainName, viceCaptainRole: resolvedViceCaptainRole }),
-          `Franchise created with Captain & Vice-Captain details (Name, Mobile, Role, and Stats based on role)`,
-          now,
-        ]
-      );
     });
 
     saveUserToCloudSql({
@@ -561,14 +1578,10 @@ app.post('/api/franchises', async (req: Request, res: Response) => {
       captain_mobile: captainMobile || null,
       captain_skill: resolvedCaptainRole,
       captain_specialty: resolvedCaptainSpecialty,
-      captain_batting_style: captainBattingStyle || null,
-      captain_bowling_style: captainBowlingStyle || null,
       captain_stats_json: captainStatsJson,
       vice_captain_mobile: viceCaptainMobile || null,
       vice_captain_skill: resolvedViceCaptainRole,
       vice_captain_specialty: resolvedViceCaptainSpecialty,
-      vice_captain_batting_style: viceCaptainBattingStyle || null,
-      vice_captain_bowling_style: viceCaptainBowlingStyle || null,
       vice_captain_stats_json: viceCaptainStatsJson,
       matches_played: mPlayed,
       matches_won: mWon,
@@ -593,14 +1606,13 @@ app.post('/api/franchises', async (req: Request, res: Response) => {
         name: name.trim(),
         department: department || '',
       },
-      message: `Franchise '${name}' registered successfully! Captain & Vice-Captain profiles and stats recorded.`,
+      message: `Franchise '${name}' registered successfully!`,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// ADMIN CAPABILITY: REGENERATE BOTH NEW LOGIN ID AND PASSWORD FOR FRANCHISE LEADERS
 app.post('/api/franchises/:id/regenerate-credentials', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -611,9 +1623,8 @@ app.post('/api/franchises/:id/regenerate-credentials', async (req: Request, res:
     }
 
     const franchise = queryOne('SELECT * FROM franchises WHERE id = ?', [id]);
-    if (!franchise) return res.status(404).json({ success: false, error: 'Franchise not found in database.' });
+    if (!franchise) return res.status(404).json({ success: false, error: 'Franchise not found.' });
 
-    // Generate new unique Franchise Login ID and strong password
     const randomSuffix = Math.floor(1000 + Math.random() * 9000);
     const newUsername = `team_${randomSuffix}`;
     const newPassword = generateFranchisePassword(franchise.name);
@@ -635,35 +1646,8 @@ app.post('/api/franchises/:id/regenerate-credentials', async (req: Request, res:
            VALUES (?, ?, ?, ?, ?, ?, ?)`,
           [newUserId, newUsername, `${newUsername}@avanthi.edu.in`, passwordHash, 'FRANCHISE', id, now]
         );
-        user = { id: newUserId, username: newUsername };
       }
-
-      execute(
-        `INSERT INTO audit_logs (id, edition_id, actor, role, action, entity, entity_id, new_state, reason, timestamp)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          `AUDIT_${now}_REGEN_CRED`,
-          franchise.edition_id,
-          'Admin',
-          'SUPER_ADMIN',
-          'REGENERATE_FRANCHISE_CREDENTIALS',
-          'FRANCHISE',
-          id,
-          JSON.stringify({ franchiseId: id, newUsername }),
-          'Admin regenerated both new login ID and password for franchise leader',
-          now,
-        ]
-      );
     });
-
-    saveUserToCloudSql({
-      id: user.id,
-      username: newUsername,
-      email: `${newUsername}@avanthi.edu.in`,
-      password_hash: passwordHash,
-      role: 'FRANCHISE',
-      franchise_id: id,
-    }).catch(() => {});
 
     res.json({
       success: true,
@@ -673,38 +1657,25 @@ app.post('/api/franchises/:id/regenerate-credentials', async (req: Request, res:
         password: newPassword,
         name: franchise.name,
       },
-      message: `New Login ID ('${newUsername}') and Password ('${newPassword}') generated for franchise '${franchise.name}'.`,
+      message: `New Login ID ('${newUsername}') and Password generated for franchise '${franchise.name}'.`,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// CAPTAIN UPDATES / ENTERS THEIR OWN STATS & PROFILE ("WHAT THEY ARE")
 app.put('/api/franchises/:id/captain-stats', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const actorRole = (req.headers['x-user-role'] as string) || req.body?.actorRole;
-    const actorFranchiseId = (req.headers['x-user-franchise-id'] as string) || req.body?.actorFranchiseId;
-    const actorUsername = (req.headers['x-user-username'] as string) || req.body?.actor || 'Captain';
-
     const franchise = queryOne('SELECT * FROM franchises WHERE id = ?', [id]);
     if (!franchise) {
       return res.status(404).json({ success: false, error: 'Franchise not found.' });
-    }
-
-    const isAuthorized = actorRole === 'SUPER_ADMIN' || actorRole === 'ADMIN' || actorFranchiseId === id || actorRole === 'FRANCHISE';
-    if (!isAuthorized) {
-      return res.status(403).json({ success: false, error: 'PERMISSION_DENIED: Only the franchise captain or administrator can update captain stats.' });
     }
 
     const {
       captainName,
       captainRoll,
       captainMobile,
-      captainBranch,
-      captainYear,
-      captainSkill,
       captainSpecialty,
       captainBattingStyle,
       captainBowlingStyle,
@@ -717,8 +1688,6 @@ app.put('/api/franchises/:id/captain-stats', async (req: Request, res: Response)
       highestScore,
       economy,
       bestBowling,
-      centuries,
-      fifties,
       bio,
     } = req.body;
 
@@ -731,64 +1700,36 @@ app.put('/api/franchises/:id/captain-stats', async (req: Request, res: Response)
       highestScore: highestScore || '-',
       economy: economy || '0.0',
       bestBowling: bestBowling || '-',
-      centuries: centuries !== undefined ? parseInt(centuries, 10) : 0,
-      fifties: fifties !== undefined ? parseInt(fifties, 10) : 0,
-      specialty: captainSpecialty || captainSkill || 'Captain',
+      specialty: captainSpecialty || 'Captain',
       bio: bio || '',
       battingStyle: captainBattingStyle || 'Right Hand Bat',
       bowlingStyle: captainBowlingStyle || 'None',
     };
     const captainStatsJson = JSON.stringify(statsObj);
-    const now = Date.now();
 
-    executeTransaction(() => {
-      execute(
-        `UPDATE franchises
-         SET captain_name = COALESCE(?, captain_name),
-             captain_roll = COALESCE(?, captain_roll),
-             captain_mobile = COALESCE(?, captain_mobile),
-             captain_branch = COALESCE(?, captain_branch),
-             captain_year = COALESCE(?, captain_year),
-             captain_skill = COALESCE(?, captain_skill),
-             captain_specialty = COALESCE(?, captain_specialty),
-             captain_batting_style = COALESCE(?, captain_batting_style),
-             captain_bowling_style = COALESCE(?, captain_bowling_style),
-             captain_cricheroes_url = COALESCE(?, captain_cricheroes_url),
-             captain_stats_json = ?
-         WHERE id = ?`,
-        [
-          captainName ? captainName.trim() : null,
-          captainRoll ? captainRoll.trim().toUpperCase() : null,
-          captainMobile ? captainMobile.trim() : null,
-          captainBranch ? captainBranch.trim() : null,
-          captainYear ? captainYear.toString() : null,
-          captainSkill ? captainSkill.trim() : null,
-          captainSpecialty ? captainSpecialty.trim() : null,
-          captainBattingStyle ? captainBattingStyle.trim() : null,
-          captainBowlingStyle ? captainBowlingStyle.trim() : null,
-          captainCricheroesUrl ? captainCricheroesUrl.trim() : null,
-          captainStatsJson,
-          id,
-        ]
-      );
-
-      execute(
-        `INSERT INTO audit_logs (id, edition_id, actor, role, action, entity, entity_id, new_state, reason, timestamp)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          `AUDIT_${now}_CAP_STATS`,
-          franchise.edition_id,
-          actorUsername,
-          'FRANCHISE',
-          'UPDATE_CAPTAIN_STATS',
-          'FRANCHISE',
-          id,
-          JSON.stringify({ captainName, captainSpecialty, stats: statsObj }),
-          'Captain updated stats and role specialty profile',
-          now,
-        ]
-      );
-    });
+    execute(
+      `UPDATE franchises
+       SET captain_name = COALESCE(?, captain_name),
+           captain_roll = COALESCE(?, captain_roll),
+           captain_mobile = COALESCE(?, captain_mobile),
+           captain_specialty = COALESCE(?, captain_specialty),
+           captain_batting_style = COALESCE(?, captain_batting_style),
+           captain_bowling_style = COALESCE(?, captain_bowling_style),
+           captain_cricheroes_url = COALESCE(?, captain_cricheroes_url),
+           captain_stats_json = ?
+       WHERE id = ?`,
+      [
+        captainName ? captainName.trim() : null,
+        captainRoll ? captainRoll.trim().toUpperCase() : null,
+        captainMobile ? captainMobile.trim() : null,
+        captainSpecialty ? captainSpecialty.trim() : null,
+        captainBattingStyle ? captainBattingStyle.trim() : null,
+        captainBowlingStyle ? captainBowlingStyle.trim() : null,
+        captainCricheroesUrl ? captainCricheroesUrl.trim() : null,
+        captainStatsJson,
+        id,
+      ]
+    );
 
     saveFranchiseToCloudSql({
       ...franchise,
@@ -801,9 +1742,8 @@ app.put('/api/franchises/:id/captain-stats', async (req: Request, res: Response)
 
     res.json({
       success: true,
-      message: 'Captain stats and role profile updated successfully and are now visible to everyone!',
+      message: 'Captain stats updated successfully and are now visible to everyone!',
       captainStats: statsObj,
-      captainSpecialty: captainSpecialty || franchise.captain_specialty,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -813,19 +1753,10 @@ app.put('/api/franchises/:id/captain-stats', async (req: Request, res: Response)
 app.delete('/api/franchises/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const actorRole = (req.headers['x-user-role'] as string) || req.body?.role || (req.query?.role as string);
-    const actorId = (req.headers['x-user-id'] as string) || req.body?.userId || (req.query?.userId as string);
+    const actorRole = (req.headers['x-user-role'] as string) || req.body?.role;
     const actorUsername = (req.headers['x-user-username'] as string) || req.body?.username || 'Admin';
 
-    let isAuthorizedAdmin = actorRole === 'SUPER_ADMIN' || actorRole === 'ADMIN' || actorRole === 'OPERATOR';
-    if (!isAuthorizedAdmin && actorId) {
-      const user = queryOne('SELECT role, username FROM users WHERE id = ?', [actorId]);
-      if (user && (user.role === 'SUPER_ADMIN' || user.role === 'ADMIN' || user.role === 'OPERATOR')) {
-        isAuthorizedAdmin = true;
-      }
-    }
-
-    if (!isAuthorizedAdmin) {
+    if (actorRole !== 'SUPER_ADMIN' && actorRole !== 'ADMIN' && actorRole !== 'OPERATOR') {
       return res.status(403).json({
         success: false,
         error: 'PERMISSION_DENIED: Only administrators have permission to delete franchises.',
@@ -842,7 +1773,7 @@ app.delete('/api/franchises/:id', async (req: Request, res: Response) => {
 
     res.json({
       success: true,
-      message: `Franchise '${franchise.name}' was completely and permanently deleted from the database by Admin.`,
+      message: `Franchise '${franchise.name}' was permanently deleted from the database.`,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -850,473 +1781,7 @@ app.delete('/api/franchises/:id', async (req: Request, res: Response) => {
 });
 
 /* ============================================================================
- * PLAYER ROUTES (All Cricket Stats, Dynamic Batting & Bowling Profiles, Referrals)
- * ============================================================================ */
-
-app.get('/api/players', (req: Request, res: Response) => {
-  const edition = auctionManager.getActiveEdition();
-  const editionId = (req.query.editionId as string) || (edition ? edition.id : 'ED_ACC_2026');
-  const players = queryAll(
-    `SELECT p.*, f.name as franchise_name, f.logo_url as franchise_logo
-     FROM players p
-     LEFT JOIN squad_members sm ON p.id = sm.player_id AND (sm.status = 'ACTIVE' OR sm.status IS NULL) AND sm.undone = 0
-     LEFT JOIN franchises f ON sm.franchise_id = f.id
-     WHERE (? = '' OR p.edition_id = ? OR p.edition_id IS NULL)
-     ORDER BY p.roll_number ASC`,
-    [editionId, editionId]
-  );
-
-  const mapped = players.map((p) => {
-    let stats: any = {};
-    try {
-      if (p.stats_json) stats = JSON.parse(p.stats_json);
-    } catch {}
-    return {
-      ...p,
-      stats,
-      academicCategoryLabel: formatAcademicCategory(p.bucket),
-      batting_style: p.batting_style || p.batting_hand || stats.battingStyle || 'Right Hand Bat',
-      bowling_style: p.bowling_style || p.bowling_profile || stats.bowlingStyle || 'None',
-    };
-  });
-
-  res.setHeader('Cache-Control', 'public, max-age=5, stale-while-revalidate=20');
-  res.json({ success: true, players: mapped });
-});
-
-// REGISTER PLAYER
-// Exactly displays and saves what player mentions during registration
-// If referred player: NO base price, direct franchise squad assignment with price 0, exempt from auction pool
-app.post('/api/players/register', async (req: Request, res: Response) => {
-  try {
-    const {
-      editionId: rawEditionId,
-      rollNumber,
-      name,
-      email,
-      mobileNumber: rawMobileNumber,
-      mobile,
-      photoUrl,
-      program,
-      branch,
-      role: rawRole,
-      playerType: rawPlayerType,
-      skill: rawSkill,
-      battingPosition,
-      battingHand,
-      battingPlayingType,
-      battingStyle: rawBattingStyle,
-      bowlingProfile,
-      bowlingStyle: rawBowlingStyle,
-      bowlingType: rawBowlingType,
-      isWicketkeeper,
-      cricheroesLink,
-      cricHeroesUrl: rawCricHeroesUrl,
-      stats,
-      basePrice: rawBasePrice,
-      password,
-      experience,
-      previousAcc,
-      referralToken,
-    } = req.body;
-
-    const editionId = rawEditionId || 'ED_ACC_2026';
-    const mobileNumber = rawMobileNumber || mobile;
-
-    if (!rollNumber || !name || !mobileNumber) {
-      return res.status(400).json({ success: false, error: 'Roll number, Name, and Mobile number are mandatory.' });
-    }
-
-    if (!photoUrl) {
-      return res.status(400).json({ success: false, error: 'MANDATORY_PHOTO: Player photograph is required to complete registration.' });
-    }
-
-    const cleanRoll = rollNumber.trim().toUpperCase();
-    const cleanMobile = mobileNumber.replace(/[\s-+]/g, '');
-
-    const dupRoll = queryOne('SELECT id FROM players WHERE edition_id = ? AND roll_number = ?', [editionId, cleanRoll]);
-    if (dupRoll) {
-      return res.status(400).json({ success: false, error: `DUPLICATE_ROLL: Roll number '${cleanRoll}' is already registered in this tournament.` });
-    }
-
-    const dupMobile = queryOne('SELECT id FROM players WHERE edition_id = ? AND mobile_number = ?', [editionId, cleanMobile]);
-    if (dupMobile) {
-      return res.status(400).json({ success: false, error: `DUPLICATE_MOBILE: Mobile number '${cleanMobile}' is already registered.` });
-    }
-
-    let isReferredPlayer = false;
-    let validReferralRecord: any = null;
-
-    if (referralToken && referralToken.trim()) {
-      validReferralRecord = queryOne(
-        `SELECT * FROM referral_tokens WHERE token = ? AND edition_id = ? AND status = 'ACTIVE'`,
-        [referralToken.trim(), editionId]
-      );
-      if (validReferralRecord) {
-        // Enforce maximum 5 referred players per franchise
-        const referralCount = queryOne(
-          `SELECT COUNT(*) as count FROM players WHERE referring_franchise_id = ? AND is_referred = 1`,
-          [validReferralRecord.franchise_id]
-        );
-        if (referralCount && referralCount.count >= 5) {
-          return res.status(400).json({
-            success: false,
-            error: 'Maximum 5 referred players reached for this franchise captain.',
-          });
-        }
-        isReferredPlayer = true;
-      }
-    }
-
-    // BASE PRICE RULE:
-    // Referred players must NOT have a base price (base_price = NULL)
-    // Normal players can have base price
-    let resolvedBasePrice: number | null = null;
-    if (isReferredPlayer) {
-      resolvedBasePrice = null;
-    } else if (rawBasePrice !== undefined && rawBasePrice !== null && rawBasePrice !== '') {
-      const parsedBp = parseInt(rawBasePrice, 10);
-      resolvedBasePrice = !isNaN(parsedBp) && parsedBp >= 20 ? parsedBp : 20;
-    } else {
-      resolvedBasePrice = null;
-    }
-
-    const parsed = RegistrationPipeline.parseRollNumber(cleanRoll, program);
-    let derivedYear = 1;
-    let derivedBucket: string | null = 'B1';
-    let resolvedBranch = branch || 'General';
-
-    if (parsed.isValid && parsed.admissionYY !== undefined) {
-      derivedYear = RegistrationPipeline.calculateAcademicYear(parsed.admissionYY, parsed.program || 'BTECH_REGULAR', 2026);
-      derivedBucket = RegistrationPipeline.deriveBucket(parsed.program || 'BTECH_REGULAR', derivedYear);
-      resolvedBranch = parsed.branchName || resolvedBranch;
-    }
-
-    const chosenRole = (rawPlayerType || rawRole || rawSkill || '').toUpperCase();
-    const isWk = chosenRole.includes('WICKET') || chosenRole.includes('KEEPER') || !!isWicketkeeper;
-    const isBowl = (chosenRole === 'BOWLER' || (chosenRole.includes('BOWL') && !chosenRole.includes('ALL'))) && !isWk;
-    const isBat = (chosenRole === 'BATSMAN' || chosenRole === 'BATTER' || (chosenRole.includes('BAT') && !chosenRole.includes('ALL'))) && !isWk;
-
-    let resolvedSkill = 'ALL_ROUNDER';
-    let resolvedPlayerType = 'All-Rounder';
-
-    if (isWk) {
-      resolvedSkill = 'WICKET_KEEPER';
-      resolvedPlayerType = 'Wicket-Keeper';
-    } else if (isBowl) {
-      resolvedSkill = 'BOWLER';
-      resolvedPlayerType = 'Bowler';
-    } else if (isBat) {
-      resolvedSkill = 'BATSMAN';
-      resolvedPlayerType = 'Batter';
-    } else {
-      resolvedSkill = 'ALL_ROUNDER';
-      resolvedPlayerType = 'All-Rounder';
-    }
-
-    const battingStyle = rawBattingStyle || battingHand || 'Right Hand Bat';
-    const bowlingStyle = rawBowlingStyle || rawBowlingType || bowlingProfile || (isBat ? 'None' : 'Right-arm Medium');
-    const cricHeroesUrl = cricheroesLink || rawCricHeroesUrl || '';
-
-    const playerId = `PL_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-    const now = Date.now();
-
-    const fullStats = {
-      ...(stats || {}),
-      battingStyle,
-      bowlingStyle,
-      battingPosition: battingPosition || stats?.battingPosition || null,
-      battingHand: battingHand || stats?.battingHand || null,
-      battingPlayingType: battingPlayingType || stats?.battingPlayingType || null,
-      bowlingProfile: bowlingProfile || stats?.bowlingProfile || null,
-    };
-    const statsJson = JSON.stringify(fullStats);
-    const passwordHash = await bcrypt.hash(password || 'player123', 10);
-    const cleanEmail = email && email.trim() ? email.trim() : `${cleanRoll.toLowerCase()}@avanthi.edu.in`;
-
-    const squadMemberId = `SQD_REF_${now}_${playerId}`;
-
-    executeTransaction(() => {
-      execute(
-        `INSERT INTO players (
-          id, edition_id, roll_number, name, email, mobile_number, photo_url,
-          program, branch, academic_year, bucket, skill, player_type,
-          batting_style, bowling_style, batting_position, batting_hand, batting_playing_type, bowling_profile,
-          experience, previous_acc,
-          cricheroes_url, cricheroes_mobile, cricheroes_status, stats_json, base_price,
-          payment_status, registration_status, is_auction_eligible, is_editing_blocked,
-          is_referred, referral_token, referred_by_captain_id, referred_by_captain_name,
-          referring_franchise_id, referring_franchise_name, referral_status,
-          created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          playerId,
-          editionId,
-          cleanRoll,
-          name.trim(),
-          cleanEmail,
-          cleanMobile,
-          photoUrl,
-          parsed.program || program || 'BTECH_REGULAR',
-          resolvedBranch,
-          derivedYear,
-          derivedBucket || 'B1',
-          resolvedSkill,
-          resolvedPlayerType,
-          battingStyle,
-          bowlingStyle,
-          battingPosition || null,
-          battingHand || null,
-          battingPlayingType || null,
-          bowlingProfile || null,
-          experience || '',
-          previousAcc || '',
-          cricHeroesUrl || '',
-          cleanMobile,
-          'PROFILE_VERIFIED',
-          statsJson,
-          resolvedBasePrice,
-          'REGISTERED',
-          isReferredPlayer ? 'DIRECT_ASSIGNMENT' : 'REGISTERED',
-          isReferredPlayer ? 0 : 1, // REFERRED PLAYERS MUST NOT ENTER AUCTION POOL
-          0,
-          isReferredPlayer ? 1 : 0,
-          validReferralRecord ? validReferralRecord.token : null,
-          validReferralRecord ? validReferralRecord.captain_id : null,
-          validReferralRecord ? validReferralRecord.captain_name : null,
-          validReferralRecord ? validReferralRecord.franchise_id : null,
-          validReferralRecord ? validReferralRecord.franchise_name : null,
-          isReferredPlayer ? 'APPROVED' : 'NONE',
-          now,
-          now,
-        ]
-      );
-
-      // DIRECT FRANCHISE ASSIGNMENT:
-      // After successful registration, the referred player must be directly assigned to the franchise
-      // that referred them without any auction price / payment, consuming 0 purse!
-      if (isReferredPlayer && validReferralRecord) {
-        execute(
-          `UPDATE referral_tokens
-           SET player_id = ?, player_name = ?, status = 'USED', verification_status = 'APPROVED'
-           WHERE token = ?`,
-          [playerId, name.trim(), validReferralRecord.token]
-        );
-
-        execute(
-          `INSERT INTO squad_members (id, edition_id, franchise_id, player_id, acquisition_type, price, round, status, timestamp, undone)
-           VALUES (?, ?, ?, ?, 'DIRECT_ASSIGNMENT', 0, 1, 'ACTIVE', ?, 0)`,
-          [squadMemberId, editionId, validReferralRecord.franchise_id, playerId, now]
-        );
-
-        execute(
-          `INSERT INTO referrals (id, edition_id, franchise_id, player_id, status, created_at)
-           VALUES (?, ?, ?, ?, 'APPROVED', ?)`,
-          [`REF_${now}_${playerId}`, editionId, validReferralRecord.franchise_id, playerId, now]
-        );
-      }
-
-      execute(
-        `INSERT INTO users (id, username, email, password_hash, role, player_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [`USR_${playerId}`, cleanRoll, cleanEmail, passwordHash, 'PLAYER', playerId, now]
-      );
-
-      execute(
-        `INSERT INTO audit_logs (id, edition_id, actor, role, action, entity, entity_id, new_state, timestamp)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          `AUDIT_${now}`,
-          editionId,
-          name,
-          'PLAYER',
-          isReferredPlayer ? 'PLAYER_REGISTERED_VIA_REFERRAL' : 'PLAYER_REGISTERED',
-          'PLAYER',
-          playerId,
-          JSON.stringify({
-            roll: cleanRoll,
-            bucket: derivedBucket,
-            role: resolvedPlayerType,
-            isReferred: isReferredPlayer,
-            referralToken: validReferralRecord?.token || null,
-            basePrice: resolvedBasePrice,
-            directAssignment: isReferredPlayer ? validReferralRecord?.franchise_id : null,
-          }),
-          now,
-        ]
-      );
-    });
-
-    saveUserToCloudSql({
-      id: `USR_${playerId}`,
-      username: cleanRoll,
-      email: cleanEmail,
-      password_hash: passwordHash,
-      role: 'PLAYER',
-      player_id: playerId,
-      created_at: now,
-    }).catch(() => {});
-
-    savePlayerToCloudSql({
-      id: playerId,
-      edition_id: editionId,
-      roll_number: cleanRoll,
-      name: name.trim(),
-      email: cleanEmail,
-      mobile_number: cleanMobile,
-      photo_url: photoUrl,
-      program: parsed.program || program || 'BTECH_REGULAR',
-      branch: resolvedBranch,
-      academic_year: derivedYear,
-      bucket: derivedBucket || 'B1',
-      skill: resolvedSkill,
-      player_type: resolvedPlayerType,
-      batting_style: battingStyle,
-      bowling_style: bowlingStyle,
-      batting_position: battingPosition || null,
-      batting_hand: battingHand || null,
-      batting_playing_type: battingPlayingType || null,
-      bowling_profile: bowlingProfile || null,
-      stats_json: statsJson,
-      base_price: resolvedBasePrice || 0,
-      is_auction_eligible: isReferredPlayer ? 0 : 1,
-      is_referred: isReferredPlayer ? 1 : 0,
-      referral_token: validReferralRecord ? validReferralRecord.token : null,
-      referred_by_captain_id: validReferralRecord ? validReferralRecord.captain_id : null,
-      referred_by_captain_name: validReferralRecord ? validReferralRecord.captain_name : null,
-      referring_franchise_id: validReferralRecord ? validReferralRecord.franchise_id : null,
-      referring_franchise_name: validReferralRecord ? validReferralRecord.franchise_name : null,
-      referral_status: isReferredPlayer ? 'APPROVED' : 'NONE',
-      created_at: now,
-      updated_at: now,
-    }).catch(() => {});
-
-    if (isReferredPlayer && validReferralRecord) {
-      saveSquadMemberToCloudSql({
-        id: squadMemberId,
-        edition_id: editionId,
-        franchise_id: validReferralRecord.franchise_id,
-        player_id: playerId,
-        acquisition_type: 'DIRECT_ASSIGNMENT',
-        price: 0,
-        round: 1,
-        status: 'ACTIVE',
-        timestamp: now,
-        undone: 0,
-      }).catch(() => {});
-    }
-
-    auctionManager.broadcast('STATE_UPDATED', { reason: 'PLAYER_REGISTERED', playerId });
-
-    res.json({
-      success: true,
-      playerId,
-      derivedBucket,
-      academicCategoryLabel: formatAcademicCategory(derivedBucket),
-      playerType: resolvedPlayerType,
-      skill: resolvedSkill,
-      isReferred: isReferredPlayer,
-      basePrice: resolvedBasePrice,
-      message: isReferredPlayer
-        ? `Referred player registered! Directly assigned to franchise '${validReferralRecord.franchise_name}'.`
-        : 'Player successfully registered and saved to database!',
-    });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.delete('/api/players/:id', async (req: Request, res: Response) => {
-  try {
-    const { id } = req.params;
-    const actorRole = (req.headers['x-user-role'] as string) || req.body?.role || (req.query?.role as string);
-    const actorId = (req.headers['x-user-id'] as string) || req.body?.userId || (req.query?.userId as string);
-    const actorUsername = (req.headers['x-user-username'] as string) || req.body?.username || 'Admin';
-
-    let isAuthorizedAdmin = actorRole === 'SUPER_ADMIN' || actorRole === 'ADMIN' || actorRole === 'OPERATOR';
-    if (!isAuthorizedAdmin && actorId) {
-      const user = queryOne('SELECT role, username FROM users WHERE id = ?', [actorId]);
-      if (user && (user.role === 'SUPER_ADMIN' || user.role === 'ADMIN' || user.role === 'OPERATOR')) {
-        isAuthorizedAdmin = true;
-      }
-    }
-
-    if (!isAuthorizedAdmin) {
-      return res.status(403).json({
-        success: false,
-        error: 'PERMISSION_DENIED: Only administrators have permission to delete players.',
-      });
-    }
-
-    const player = queryOne('SELECT * FROM players WHERE id = ?', [id]);
-    if (!player) {
-      return res.status(404).json({ success: false, error: 'Player not found in database.' });
-    }
-
-    deleteSinglePlayer(id, actorUsername);
-    auctionManager.broadcast('STATE_UPDATED', { reason: 'PLAYER_DELETED', playerId: id });
-
-    res.json({
-      success: true,
-      message: `Player '${player.name}' was completely and permanently deleted from the database by Admin.`,
-    });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.post('/api/admin/verify-player', (req: Request, res: Response) => {
-  try {
-    const { playerId, basePrice, isEligible, actor } = req.body;
-    if (!playerId) return res.status(400).json({ success: false, error: 'Player ID is required.' });
-
-    const player = queryOne('SELECT * FROM players WHERE id = ?', [playerId]);
-    if (!player) return res.status(404).json({ success: false, error: 'Player not found.' });
-
-    const newPayment = 'REGISTERED';
-    const newCH = player.cricheroes_status || 'PROFILE_RESOLVED';
-    const newBase = basePrice !== undefined ? parseInt(basePrice, 10) : player.base_price;
-    const isAuctionEligible = isEligible !== undefined ? (isEligible ? 1 : 0) : 1;
-    const now = Date.now();
-
-    execute(
-      `UPDATE players
-       SET payment_status = ?, cricheroes_status = ?, base_price = ?, is_auction_eligible = ?, updated_at = ?
-       WHERE id = ?`,
-      [newPayment, newCH, newBase, isAuctionEligible, now, playerId]
-    );
-
-    savePlayerToCloudSql({
-      ...player,
-      base_price: newBase,
-      is_auction_eligible: isAuctionEligible,
-      updated_at: now,
-    }).catch(() => {});
-
-    execute(
-      `INSERT INTO audit_logs (id, edition_id, actor, role, action, entity, entity_id, new_state, timestamp)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        `AUDIT_${now}`,
-        player.edition_id,
-        actor || 'SuperAdmin',
-        'SUPER_ADMIN',
-        'VERIFY_PLAYER',
-        'PLAYER',
-        playerId,
-        JSON.stringify({ payment: newPayment, cricheroes: newCH, basePrice: newBase, eligible: isAuctionEligible }),
-        now,
-      ]
-    );
-
-    res.json({ success: true, isAuctionEligible });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-/* ============================================================================
- * REFERRAL SYSTEM ROUTES
+ * REFERRAL SYSTEM (Captain Referrals - 0-5 players)
  * ============================================================================ */
 
 app.post('/api/referrals/generate', async (req: Request, res: Response) => {
@@ -1332,7 +1797,6 @@ app.post('/api/referrals/generate', async (req: Request, res: Response) => {
       return res.status(404).json({ success: false, error: 'Franchise not found.' });
     }
 
-    // Check 0–5 limit
     const activeReferralsCount = queryOne(
       `SELECT COUNT(*) as count FROM players WHERE referring_franchise_id = ? AND is_referred = 1`,
       [franchiseId]
@@ -1394,7 +1858,7 @@ app.get('/api/referrals/validate/:token', (req: Request, res: Response) => {
       token: referral.token,
       franchiseId: referral.franchise_id,
       franchiseName: referral.franchise_name,
-      captainName: referral.captain_name || referral.captain_name,
+      captainName: referral.captain_name,
       captainMobile: referral.captain_mobile || '',
     });
   } catch (err: any) {
@@ -1402,7 +1866,6 @@ app.get('/api/referrals/validate/:token', (req: Request, res: Response) => {
   }
 });
 
-// ADMIN DEDICATED REFERRED PLAYERS SECTION
 app.get('/api/admin/referrals', (req: Request, res: Response) => {
   try {
     const actorRole = (req.headers['x-user-role'] as string) || (req.query?.role as string);
@@ -1410,7 +1873,6 @@ app.get('/api/admin/referrals', (req: Request, res: Response) => {
       return res.status(403).json({ success: false, error: 'PERMISSION_DENIED: Administrator access required.' });
     }
 
-    // Details for Admin to cross-check: PLAYER -> REFERRED BY CAPTAIN -> FRANCHISE
     const referredPlayers = queryAll(
       `SELECT p.id as player_registration_id, p.name as player_name, p.roll_number, p.mobile_number, p.email,
               p.registration_status, p.is_referred, p.referral_token,
@@ -1418,7 +1880,7 @@ app.get('/api/admin/referrals', (req: Request, res: Response) => {
               p.referring_franchise_id as franchise_id, p.referral_status, p.bucket, p.player_type, p.created_at,
               p.stats_json, p.branch, p.program
        FROM players p
-       WHERE p.is_referred = 1
+       WHERE p.is_referred = 1 OR (p.referral_status IS NOT NULL AND p.referral_status != 'NONE') OR p.referral_token IS NOT NULL
        ORDER BY p.created_at DESC`
     );
 
@@ -1442,16 +1904,98 @@ app.get('/api/admin/referrals', (req: Request, res: Response) => {
   }
 });
 
-/* ============================================================================
- * GUEST DRAW MODE ROUTES
- * ============================================================================ */
-
-app.get('/api/auction/guest-draw-candidates', (req: Request, res: Response) => {
+app.post('/api/admin/referrals/decide', (req: Request, res: Response) => {
   try {
-    const edition = auctionManager.getActiveEdition();
-    const editionId = (req.query.editionId as string) || (edition ? edition.id : 'ED_ACC_2026');
-    const candidates = auctionManager.getEligibleGuestDrawPlayers(editionId);
-    res.json({ success: true, candidates });
+    const actorRole = (req.headers['x-user-role'] as string) || req.body?.actorRole || 'ADMIN';
+    const { playerId, decision, basePrice } = req.body;
+
+    if (!playerId || !decision) {
+      return res.status(400).json({ success: false, error: 'Player ID and decision required.' });
+    }
+
+    const player = queryOne('SELECT * FROM players WHERE id = ?', [playerId]);
+    if (!player) {
+      return res.status(404).json({ success: false, error: 'Player not found.' });
+    }
+
+    const now = Date.now();
+    const edId = player.edition_id || auctionManager.getActiveEdition()?.id || 'ED_ACC_2026';
+
+    if (decision === 'ACCEPT_TO_SQUAD' || decision === 'ACCEPT') {
+      const franchiseId = player.referring_franchise_id;
+      if (!franchiseId) {
+        return res.status(400).json({ success: false, error: 'No referring franchise assigned to this player.' });
+      }
+
+      const squadMemberId = `SQD_${now}_${player.id}`;
+      executeTransaction(() => {
+        execute(
+          `INSERT INTO squad_members (id, edition_id, franchise_id, player_id, acquisition_type, price, round, status, timestamp, undone)
+           VALUES (?, ?, ?, ?, 'DIRECT_ASSIGNMENT', 0, 1, 'ACTIVE', ?, 0)`,
+          [squadMemberId, edId, franchiseId, player.id, now]
+        );
+
+        execute(
+          `UPDATE players
+           SET referral_status = 'APPROVED', approval_status = 'APPROVED', is_referred = 1, is_auction_eligible = 0, registration_status = 'APPROVED_SQUAD', updated_at = ?
+           WHERE id = ?`,
+          [now, player.id]
+        );
+
+        if (player.referral_token) {
+          execute(
+            `UPDATE referral_tokens SET status = 'USED', verification_status = 'APPROVED' WHERE token = ?`,
+            [player.referral_token]
+          );
+        }
+      });
+
+      saveSquadMemberToCloudSql({
+        id: squadMemberId,
+        edition_id: edId,
+        franchise_id: franchiseId,
+        player_id: player.id,
+        acquisition_type: 'DIRECT_ASSIGNMENT',
+        price: 0,
+        round: 1,
+        status: 'ACTIVE',
+        timestamp: now,
+        undone: 0,
+      }).catch(() => {});
+
+      auctionManager.broadcast('STATE_UPDATED', { reason: 'REFERRAL_ACCEPTED_TO_SQUAD', playerId, franchiseId });
+
+      return res.json({
+        success: true,
+        decision: 'ACCEPTED',
+        message: `Referred player '${player.name}' was accepted by Admin and successfully added to ${player.referring_franchise_name || 'franchise'} squad!`,
+      });
+    } else {
+      const resolvedBp = basePrice ? parseInt(basePrice, 10) : 20;
+      executeTransaction(() => {
+        execute(
+          `UPDATE players
+           SET referral_status = 'REJECTED_SENT_TO_AUCTION', is_referred = 0, base_price = ?, is_auction_eligible = 1, approval_status = 'APPROVED', registration_status = 'APPROVED_FOR_AUCTION', updated_at = ?
+           WHERE id = ?`,
+          [resolvedBp, now, player.id]
+        );
+
+        if (player.referral_token) {
+          execute(
+            `UPDATE referral_tokens SET status = 'REJECTED', verification_status = 'SENT_TO_AUCTION' WHERE token = ?`,
+            [player.referral_token]
+          );
+        }
+      });
+
+      auctionManager.broadcast('STATE_UPDATED', { reason: 'REFERRAL_SENT_TO_AUCTION', playerId });
+
+      return res.json({
+        success: true,
+        decision: 'SENT_TO_AUCTION',
+        message: `Referral declined for '${player.name}'. Player has been assigned base price ₹${resolvedBp} Lakhs and sent directly to the Live Auction pool!`,
+      });
+    }
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -1569,7 +2113,7 @@ app.get('/api/admin/squads', (req: Request, res: Response) => {
 });
 
 /* ============================================================================
- * AUCTION FLOOR & CONTROL ROUTES
+ * AUCTION FLOOR & CONTROL ROUTES (Requirements 1, 2, 5, 6, 11)
  * ============================================================================ */
 
 app.get('/api/auction/state', (req: Request, res: Response) => {
@@ -1648,6 +2192,11 @@ app.get('/api/auction/state', (req: Request, res: Response) => {
       soldCount,
       unsoldCount,
       viewerCount: auctionManager.getViewerCount(),
+      activeSession: auctionManager.getActiveSession(),
+      sessionState: auctionManager.getSessionState(),
+      customTimerAlert: auctionManager.getCustomTimerAlert(),
+      isPaused: auctionManager.getIsPaused(),
+      pausedRemainingMs: auctionManager.getPausedRemainingMs(),
       serverTime: Date.now(),
     });
   } catch (err: any) {
@@ -1695,8 +2244,9 @@ app.post('/api/auction/pass', async (req: Request, res: Response) => {
 
 app.post('/api/auction/hammer', async (req: Request, res: Response) => {
   try {
-    const { editionId, actor } = req.body;
-    const result = await auctionManager.strikeHammer(editionId, actor);
+    const { editionId, actor, action } = req.body;
+    const activeEd = editionId || auctionManager.getActiveEdition()?.id || 'ED_ACC_2026';
+    const result = await auctionManager.strikeHammer(activeEd, actor || 'Admin', action);
     res.json({ success: true, result });
   } catch (err: any) {
     res.status(400).json({ success: false, error: err.message });
@@ -1731,11 +2281,73 @@ app.post('/api/auction/timer/reset', async (req: Request, res: Response) => {
 
 app.post('/api/auction/draw-next', async (req: Request, res: Response) => {
   try {
-    const { editionId, mode, playerId, actor } = req.body;
-    const lot = await auctionManager.drawNextPlayer(editionId, mode || 'AUTO', playerId, actor);
+    const { editionId, mode, playerId, identifier, actor } = req.body;
+    const targetLotId = playerId || identifier;
+    const lot = await auctionManager.drawNextPlayer(editionId, mode || 'AUTO', targetLotId, actor);
     res.json({ success: true, lot });
   } catch (err: any) {
     res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/auction/draw', async (req: Request, res: Response) => {
+  try {
+    const { editionId, mode, playerId, identifier, actor } = req.body;
+    const targetLotId = playerId || identifier;
+    const lot = await auctionManager.drawNextPlayer(editionId, mode || 'AUTO', targetLotId, actor);
+    res.json({ success: true, lot });
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/auction/toggle-pause', async (req: Request, res: Response) => {
+  try {
+    const { editionId, actor } = req.body;
+    const activeEd = editionId || auctionManager.getActiveEdition()?.id || 'ED_ACC_2026';
+    const result = await auctionManager.toggleAuctionPause(activeEd, actor || 'StageAdmin');
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/auction/pause', async (req: Request, res: Response) => {
+  try {
+    const { editionId, actor } = req.body;
+    const activeEd = editionId || auctionManager.getActiveEdition()?.id || 'ED_ACC_2026';
+    if (!auctionManager.getIsPaused()) {
+      const result = await auctionManager.toggleAuctionPause(activeEd, actor || 'StageAdmin');
+      return res.json(result);
+    }
+    res.json({ success: true, isPaused: true, message: 'Auction is already paused.' });
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/auction/resume', async (req: Request, res: Response) => {
+  try {
+    const { editionId, actor } = req.body;
+    const activeEd = editionId || auctionManager.getActiveEdition()?.id || 'ED_ACC_2026';
+    if (auctionManager.getIsPaused()) {
+      const result = await auctionManager.toggleAuctionPause(activeEd, actor || 'StageAdmin');
+      return res.json(result);
+    }
+    res.json({ success: true, isPaused: false, message: 'Auction is already running.' });
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/auction/guest-draw-candidates', (req: Request, res: Response) => {
+  try {
+    const edition = auctionManager.getActiveEdition();
+    const editionId = (req.query.editionId as string) || (edition ? edition.id : 'ED_ACC_2026');
+    const candidates = auctionManager.getEligibleGuestDrawPlayers(editionId);
+    res.json({ success: true, candidates });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -1746,6 +2358,41 @@ app.post('/api/auction/skip', async (req: Request, res: Response) => {
     res.json(result);
   } catch (err: any) {
     res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+/* ============================================================================
+ * CUSTOM AUCTION TIMER ALERT (Requirement 2)
+ * ============================================================================ */
+
+app.post('/api/auction/custom-timer-alert', (req: Request, res: Response) => {
+  try {
+    const { durationSeconds, message } = req.body;
+    const actor = (req.headers['x-user-username'] as string) || req.body?.actor || 'SuperAdmin';
+    const seconds = durationSeconds ? parseInt(durationSeconds, 10) : 30;
+
+    const alert = auctionManager.setCustomTimerAlert(seconds, message || 'Live Auction Starting Soon!', actor);
+    res.json({ success: true, alert, message: `Custom auction timer alert set for ${seconds} seconds.` });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.delete('/api/auction/custom-timer-alert', (req: Request, res: Response) => {
+  try {
+    auctionManager.cancelCustomTimerAlert();
+    res.json({ success: true, message: 'Custom timer alert cancelled.' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/auction/custom-timer-alert', (req: Request, res: Response) => {
+  try {
+    const alert = auctionManager.getCustomTimerAlert();
+    res.json({ success: true, alert });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -1762,8 +2409,6 @@ app.post('/api/auction/undo', async (req: Request, res: Response) => {
   }
 });
 
-// BROADCAST AUCTION NOTICE (WITH CUSTOM TIME ALERT)
-// Requirement 1: "in the existing system we already have the broadcast auction notice like sending alet auction starts in 10 min so i need to modify it as setting custom time alert so we can set the custome time.."
 app.post('/api/auction/notify', async (req: Request, res: Response) => {
   try {
     const { editionId, type, title, message, target, startsInMinutes, actor } = req.body;
@@ -1803,7 +2448,7 @@ app.get('/api/auction/notifications', (req: Request, res: Response) => {
   }
 });
 
-app.post('/api/admin/reset-system', (req: Request, res: Response) => {
+app.post('/api/admin/reset-system', async (req: Request, res: Response) => {
   try {
     const actorRole = (req.headers['x-user-role'] as string) || req.body?.role || (req.query?.role as string);
     const actorId = (req.headers['x-user-id'] as string) || req.body?.userId;
@@ -1824,12 +2469,13 @@ app.post('/api/admin/reset-system', (req: Request, res: Response) => {
       });
     }
 
-    resetSystemData(actorUsername);
+    await resetSystemData(actorUsername);
+    auctionManager.resetAuctionState();
     auctionManager.broadcast('STATE_UPDATED', { reason: 'SYSTEM_RESET' });
 
     res.json({
       success: true,
-      message: 'System reset completed successfully.',
+      message: 'System reset completed successfully. The entire data (all players, franchises, bids, lots, sales, and squad members) has been completely deleted. You can now add fresh franchises and register fresh players.',
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });

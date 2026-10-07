@@ -18,7 +18,6 @@ import {
 } from 'lucide-react';
 import { useAuction } from '../context/AuctionContext';
 import { useVirtualGrid } from '../hooks/useVirtualGrid';
-import { formatAcademicCategory, normalizeCategoryCode } from '../utils/academicCategories';
 
 export const PlayersList: React.FC<{ onNavigate: (route: string) => void }> = ({ onNavigate }) => {
   const { players, loadingPlayers, fetchPlayers } = useAuction();
@@ -48,8 +47,7 @@ export const PlayersList: React.FC<{ onNavigate: (route: string) => void }> = ({
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return players.filter((p) => {
-      const pNormBucket = normalizeCategoryCode(p.bucket);
-      const matchBucket = filterBucket === 'ALL' || pNormBucket === filterBucket;
+      const matchBucket = filterBucket === 'ALL' || p.bucket === filterBucket;
       const matchRole = filterRole === 'ALL' || normalizeRole(p) === filterRole;
       const matchSearch =
         !q ||
@@ -92,7 +90,7 @@ export const PlayersList: React.FC<{ onNavigate: (route: string) => void }> = ({
             </span>
           </h1>
           <p className="text-xs text-slate-400 mt-1">
-            Athletes registered across 1st Year B.Tech to PG for Avanthi Cricket Carnival 2026
+            Athletes registered across B1 to PG buckets for Avanthi Cricket Carnival 2026
           </p>
         </div>
 
@@ -186,25 +184,17 @@ export const PlayersList: React.FC<{ onNavigate: (route: string) => void }> = ({
         </div>
 
         <div className="flex items-center gap-1.5 overflow-x-auto pb-1 md:pb-0">
-          {[
-            { id: 'ALL', label: 'All Categories' },
-            { id: 'B1', label: '1st Year B.Tech' },
-            { id: 'B2', label: '2nd Year B.Tech' },
-            { id: 'B3', label: '3rd Year B.Tech' },
-            { id: 'B4', label: '4th Year B.Tech' },
-            { id: 'B5', label: 'Diploma - D' },
-            { id: 'PG', label: 'PG - P' },
-          ].map((b) => (
+          {['ALL', 'B1', 'B2', 'B3', 'B4', 'B5', 'PG'].map((b) => (
             <button
-              key={b.id}
-              onClick={() => setFilterBucket(b.id)}
-              className={`px-3 py-2 rounded-xl text-xs font-bold transition cursor-pointer shrink-0 ${
-                filterBucket === b.id
+              key={b}
+              onClick={() => setFilterBucket(b)}
+              className={`px-3 py-2 rounded-xl text-xs font-bold font-mono transition cursor-pointer shrink-0 ${
+                filterBucket === b
                   ? 'bg-amber-500 text-slate-950 font-black shadow-md shadow-amber-500/20'
                   : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
               }`}
             >
-              {b.label}
+              {b}
             </button>
           ))}
         </div>
@@ -336,7 +326,7 @@ export const PlayersList: React.FC<{ onNavigate: (route: string) => void }> = ({
 
                             <div className="flex items-center gap-2 shrink-0">
                               <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 font-mono font-bold text-[10px] border border-amber-500/30">
-                                {formatAcademicCategory(p.bucket)}
+                                {p.bucket || 'PG'}
                               </span>
                               <span
                                 className={`px-2 py-0.5 rounded font-bold text-[10px] border ${roleBadgeColor}`}
@@ -346,10 +336,10 @@ export const PlayersList: React.FC<{ onNavigate: (route: string) => void }> = ({
 
                               <div className="hidden lg:flex flex-col text-[10px] text-slate-400 w-36 truncate font-mono">
                                 <span className="truncate">
-                                  Bat: {p.batting_style || p.batting_hand || 'RHB'}
+                                  Bat: {p.batting_style || 'RHB'}
                                 </span>
                                 <span className="truncate">
-                                  Bowl: {p.bowling_style || p.bowling_profile || 'None'}
+                                  Bowl: {p.bowling_style || 'None'}
                                 </span>
                               </div>
 
@@ -377,7 +367,7 @@ export const PlayersList: React.FC<{ onNavigate: (route: string) => void }> = ({
                                   Base Price
                                 </div>
                                 <div className="text-xs font-bold font-mono text-amber-400">
-                                  {p.is_referred === 1 ? 'Referred' : p.base_price ? `${p.base_price} Pts` : 'Optional'}
+                                  {p.base_price || 20} Pts
                                 </div>
                               </div>
                             </div>
@@ -449,7 +439,7 @@ export const PlayersList: React.FC<{ onNavigate: (route: string) => void }> = ({
 
                               <div className="flex flex-wrap items-center gap-1.5 mb-2">
                                 <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 font-mono font-bold text-[10px] border border-amber-500/30">
-                                  {formatAcademicCategory(p.bucket)}
+                                  Bucket {p.bucket || 'PG'}
                                 </span>
                                 <span
                                   className={`px-2 py-0.5 rounded font-bold text-[10px] border ${roleBadgeColor}`}
@@ -461,11 +451,11 @@ export const PlayersList: React.FC<{ onNavigate: (route: string) => void }> = ({
                               <div className="text-[11px] text-slate-300 space-y-0.5 bg-slate-950/60 p-2 rounded-lg border border-slate-800/80 mb-2">
                                 <div className="truncate">
                                   <span className="text-slate-500">Bat:</span>{' '}
-                                  {p.batting_style || p.batting_hand || p.stats?.battingStyle || 'Right Hand Bat'}
+                                  {p.batting_style || p.stats?.battingStyle || 'Right Hand Bat'}
                                 </div>
                                 <div className="truncate">
                                   <span className="text-slate-500">Bowl:</span>{' '}
-                                  {p.bowling_style || p.bowling_profile || p.stats?.bowlingStyle || 'Right Arm Medium'}
+                                  {p.bowling_style || p.stats?.bowlingStyle || 'Right Arm Medium'}
                                 </div>
                               </div>
 
@@ -494,7 +484,7 @@ export const PlayersList: React.FC<{ onNavigate: (route: string) => void }> = ({
                             <div className="pt-2.5 mt-2 border-t border-slate-800/80 flex items-center justify-between text-xs font-mono">
                               <span className="text-slate-400">Base Price:</span>
                               <span className="font-bold text-amber-400">
-                                {p.is_referred === 1 ? 'Referred' : p.base_price ? `${p.base_price} Pts (₹)` : 'Optional'}
+                                {p.base_price || 20} Pts (₹)
                               </span>
                             </div>
                           </div>
@@ -530,7 +520,7 @@ export const PlayersList: React.FC<{ onNavigate: (route: string) => void }> = ({
                     {selectedPlayer.name}
                   </h3>
                   <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 font-mono font-bold text-xs border border-amber-500/30">
-                    {formatAcademicCategory(selectedPlayer.bucket)}
+                    Bucket {selectedPlayer.bucket || 'PG'}
                   </span>
                 </div>
                 <div className="text-xs text-slate-400 font-mono mt-0.5">
@@ -563,7 +553,7 @@ export const PlayersList: React.FC<{ onNavigate: (route: string) => void }> = ({
                     Auction Base Price
                   </div>
                   <div className="text-sm font-bold font-mono text-amber-400 mt-1">
-                    {selectedPlayer.is_referred === 1 ? 'Referred (No Base Price)' : selectedPlayer.base_price ? `${selectedPlayer.base_price} Points (₹)` : 'Optional / None'}
+                    {selectedPlayer.base_price || 20} Points (₹)
                   </div>
                 </div>
               </div>
@@ -573,7 +563,6 @@ export const PlayersList: React.FC<{ onNavigate: (route: string) => void }> = ({
                   <span className="text-slate-400 font-medium">Batting Style:</span>
                   <span className="font-bold text-white font-mono">
                     {selectedPlayer.batting_style ||
-                      selectedPlayer.batting_hand ||
                       selectedPlayer.stats?.battingStyle ||
                       'Right Hand Bat'}
                   </span>
@@ -582,7 +571,6 @@ export const PlayersList: React.FC<{ onNavigate: (route: string) => void }> = ({
                   <span className="text-slate-400 font-medium">Bowling Style:</span>
                   <span className="font-bold text-white font-mono">
                     {selectedPlayer.bowling_style ||
-                      selectedPlayer.bowling_profile ||
                       selectedPlayer.stats?.bowlingStyle ||
                       'Right Arm Medium'}
                   </span>
@@ -591,7 +579,7 @@ export const PlayersList: React.FC<{ onNavigate: (route: string) => void }> = ({
 
               <div>
                 <div className="text-slate-400 font-mono text-[10px] uppercase tracking-wider mb-2">
-                  Match Records (Entered by Athlete)
+                  Match Records
                 </div>
                 <div className="grid grid-cols-3 gap-2 text-center">
                   <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">

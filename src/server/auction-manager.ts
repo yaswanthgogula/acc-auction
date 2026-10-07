@@ -4,7 +4,8 @@
  * ============================================================================
  * Server-authoritative state transitions, concurrency mutex, legal bid
  * validation, maximum permissible bid calculation, timer handling, hammer,
- * undo, Random Draw, Guest Draw, squad management, and SSE event broadcasting.
+ * undo, Random Draw, Masked Guest Draw (Req 5), Fixed 10s Auto-Transition (Req 6),
+ * Strict Bucket Ordering (Req 1), and Two Auction Sessions (Req 11).
  */
 
 import {
@@ -14,7 +15,7 @@ import {
   executeTransaction,
 } from './db';
 import { AuctionPipeline } from '../engine/acc-combined-engines';
-import { formatAcademicCategory, normalizeCategoryCode } from '../utils/academicCategories';
+import { formatAcademicCategory, normalizeCategoryCode, STRICT_BUCKET_AUCTION_ORDER } from '../utils/academicCategories';
 import {
   saveSquadMemberToCloudSql,
   saveSaleToCloudSql,
@@ -30,6 +31,20 @@ class AuctionManager {
   private sseClients: Map<string, any> = new Map();
   private mutexLocked = false;
   private mutexQueue: Array<() => void> = [];
+
+  // Automatic 10-second transition timer (Requirement 6)
+  private autoTransitionTimeout: NodeJS.Timeout | null = null;
+  private autoTransitionCountdownInterval: NodeJS.Timeout | null = null;
+  private autoTransitionDeadline: number | null = null;
+
+  // Pause / Play Auction Controls (Requirement 3)
+  private isPaused: boolean = false;
+  private pausedRemainingMs: number | null = null;
+  private pausedAutoTransitionSeconds: number | null = null;
+
+  // Session Control (Requirement 11)
+  private activeSession: 1 | 2 = 1;
+  private sessionState: 'SESSION_1_ACTIVE' | 'SESSION_1_ENDED' | 'SESSION_2_ACTIVE' | 'SESSION_2_ENDED' = 'SESSION_1_ACTIVE';
 
   private async acquireLock(): Promise<() => void> {
     return new Promise((resolve) => {
@@ -52,6 +67,95 @@ class AuctionManager {
   }
 
   private viewerBroadcastTimeout: NodeJS.Timeout | null = null;
+  private customTimerAlert: {
+    active: boolean;
+    startsAt: number;
+    durationSeconds: number;
+    message: string;
+    phase: 'ALERT_COUNTDOWN' | 'FINAL_10S' | 'STARTED';
+  } | null = null;
+  private customAlertTimeout: NodeJS.Timeout | null = null;
+  private customFinal10sTimeout: NodeJS.Timeout | null = null;
+
+  getCustomTimerAlert() {
+    if (!this.customTimerAlert || !this.customTimerAlert.active) return null;
+    const now = Date.now();
+    const remaining = Math.max(0, Math.ceil((this.customTimerAlert.startsAt - now) / 1000));
+    return {
+      ...this.customTimerAlert,
+      secondsRemaining: remaining,
+    };
+  }
+
+  setCustomTimerAlert(durationSeconds: number, message: string = 'Auction starts in timer', actor: string = 'SuperAdmin') {
+    if (this.customAlertTimeout) clearTimeout(this.customAlertTimeout);
+    if (this.customFinal10sTimeout) clearTimeout(this.customFinal10sTimeout);
+
+    const edition = this.getActiveEdition();
+    const editionId = edition?.id || 'ED_ACC_2026';
+    const now = Date.now();
+    const targetStartsAt = now + durationSeconds * 1000;
+
+    this.customTimerAlert = {
+      active: true,
+      startsAt: targetStartsAt,
+      durationSeconds,
+      message,
+      phase: 'ALERT_COUNTDOWN',
+    };
+
+    this.broadcast('CUSTOM_TIMER_ALERT_STARTED', {
+      customTimerAlert: this.getCustomTimerAlert(),
+      actor,
+    });
+
+    this.customAlertTimeout = setTimeout(() => {
+      const final10StartsAt = Date.now() + 10000;
+      this.customTimerAlert = {
+        active: true,
+        startsAt: final10StartsAt,
+        durationSeconds: 10,
+        message: 'Auction custom alert ended. Directly starting auction in 10 seconds!',
+        phase: 'FINAL_10S',
+      };
+
+      this.broadcast('CUSTOM_TIMER_FINAL_10S', {
+        customTimerAlert: this.getCustomTimerAlert(),
+      });
+
+      this.customFinal10sTimeout = setTimeout(async () => {
+        this.customTimerAlert = {
+          active: false,
+          startsAt: Date.now(),
+          durationSeconds: 0,
+          message: 'Auction officially started!',
+          phase: 'STARTED',
+        };
+
+        this.broadcast('CUSTOM_TIMER_ALERT_ENDED', { customTimerAlert: null });
+
+        try {
+          await this.setAuctionSession(editionId, 1, 'START', 'SystemAutoTimer');
+          const current = this.getCurrentLot(editionId);
+          if (!current) {
+            await this.drawNextPlayer(editionId, 'AUTO', undefined, 'SystemTimer');
+          }
+        } catch (e) {
+          console.error('Error auto-starting auction after custom timer alert:', e);
+        }
+      }, 10000);
+    }, durationSeconds * 1000);
+
+    return this.getCustomTimerAlert();
+  }
+
+  cancelCustomTimerAlert() {
+    if (this.customAlertTimeout) clearTimeout(this.customAlertTimeout);
+    if (this.customFinal10sTimeout) clearTimeout(this.customFinal10sTimeout);
+    this.customTimerAlert = null;
+    this.broadcast('CUSTOM_TIMER_ALERT_ENDED', { customTimerAlert: null });
+    return { success: true };
+  }
 
   private scheduleViewerBroadcast() {
     if (this.viewerBroadcastTimeout) return;
@@ -69,6 +173,284 @@ class AuctionManager {
   removeSSEClient(clientId: string) {
     this.sseClients.delete(clientId);
     this.scheduleViewerBroadcast();
+  }
+
+  getActiveSession(): 1 | 2 {
+    const edition = this.getActiveEdition();
+    if (edition?.active_session) {
+      this.activeSession = edition.active_session === 2 ? 2 : 1;
+    }
+    return this.activeSession;
+  }
+
+  getSessionState(): string {
+    const edition = this.getActiveEdition();
+    if (edition?.session_state) {
+      this.sessionState = edition.session_state as any;
+    }
+    return this.sessionState;
+  }
+
+  async setAuctionSession(editionId: string, session: 1 | 2, action: 'START' | 'END', actor: string = 'SuperAdmin') {
+    const release = await this.acquireLock();
+    try {
+      this.cancelAutoTransition();
+      this.activeSession = session;
+      const newState = action === 'START'
+        ? (session === 1 ? 'SESSION_1_ACTIVE' : 'SESSION_2_ACTIVE')
+        : (session === 1 ? 'SESSION_1_ENDED' : 'SESSION_2_ENDED');
+
+      this.sessionState = newState as any;
+
+      const now = Date.now();
+      execute(
+        `UPDATE editions SET active_session = ?, session_state = ? WHERE id = ?`,
+        [session, newState, editionId]
+      );
+
+      if (action === 'END') {
+        execute(
+          `UPDATE auction_lots SET deadline_ms = NULL, lot_state = 'SKIPPED'
+           WHERE edition_id = ? AND (lot_state = 'IN_AUCTION' OR lot_state = 'CALLED')`,
+          [editionId]
+        );
+      }
+
+      execute(
+        `INSERT INTO audit_logs (id, edition_id, actor, role, action, entity, entity_id, new_state, timestamp)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          `AUDIT_${now}_SESSION`,
+          editionId,
+          actor,
+          'SUPER_ADMIN',
+          action === 'START' ? `START_SESSION_${session}` : `END_SESSION_${session}`,
+          'AUCTION_SESSION',
+          `SESSION_${session}`,
+          JSON.stringify({ session, action, state: newState }),
+          now,
+        ]
+      );
+
+      this.broadcast('SESSION_STATE_CHANGED', {
+        activeSession: session,
+        sessionState: newState,
+        action,
+        timestamp: now,
+      });
+
+      return {
+        success: true,
+        activeSession: session,
+        sessionState: newState,
+        message: action === 'START' ? `Auction Session ${session} started successfully.` : `Auction Session ${session} ended. Bidding activity stopped.`,
+      };
+    } finally {
+      release();
+    }
+  }
+
+  cancelAutoTransition() {
+    if (this.autoTransitionTimeout) {
+      clearTimeout(this.autoTransitionTimeout);
+      this.autoTransitionTimeout = null;
+    }
+    if (this.autoTransitionCountdownInterval) {
+      clearInterval(this.autoTransitionCountdownInterval);
+      this.autoTransitionCountdownInterval = null;
+    }
+    this.autoTransitionDeadline = null;
+    this.broadcast('AUTO_TRANSITION_CANCELLED', {});
+  }
+
+  private scheduleAutoTransition(editionId: string) {
+    this.cancelAutoTransition();
+
+    const sessionState = this.getSessionState();
+    if (sessionState.endsWith('_ENDED')) {
+      return;
+    }
+
+    const durationSeconds = 10;
+    const now = Date.now();
+    this.autoTransitionDeadline = now + durationSeconds * 1000;
+
+    let secondsLeft = durationSeconds;
+    this.broadcast('AUTO_TRANSITION_COUNTDOWN', {
+      countdownSeconds: secondsLeft,
+      deadlineMs: this.autoTransitionDeadline,
+    });
+
+    this.autoTransitionCountdownInterval = setInterval(() => {
+      secondsLeft = Math.max(0, Math.ceil(((this.autoTransitionDeadline || 0) - Date.now()) / 1000));
+      this.broadcast('AUTO_TRANSITION_COUNTDOWN', {
+        countdownSeconds: secondsLeft,
+        deadlineMs: this.autoTransitionDeadline,
+      });
+      if (secondsLeft <= 0) {
+        if (this.autoTransitionCountdownInterval) {
+          clearInterval(this.autoTransitionCountdownInterval);
+          this.autoTransitionCountdownInterval = null;
+        }
+      }
+    }, 1000);
+
+    this.autoTransitionTimeout = setTimeout(async () => {
+      this.cancelAutoTransition();
+      try {
+        await this.drawNextPlayer(editionId, 'AUTO', undefined, 'SYSTEM_AUTO_TRANSITION');
+      } catch (err: any) {
+        console.warn('[Auto-Transition] Next lot could not be drawn automatically:', err.message);
+      }
+    }, durationSeconds * 1000);
+  }
+
+  private scheduleAutoTransitionWithSeconds(editionId: string, durationSeconds: number) {
+    this.cancelAutoTransition();
+    const sessionState = this.getSessionState();
+    if (sessionState.endsWith('_ENDED') || this.isPaused) {
+      return;
+    }
+
+    const now = Date.now();
+    this.autoTransitionDeadline = now + durationSeconds * 1000;
+
+    let secondsLeft = durationSeconds;
+    this.broadcast('AUTO_TRANSITION_COUNTDOWN', {
+      countdownSeconds: secondsLeft,
+      deadlineMs: this.autoTransitionDeadline,
+    });
+
+    this.autoTransitionCountdownInterval = setInterval(() => {
+      secondsLeft = Math.max(0, Math.ceil(((this.autoTransitionDeadline || 0) - Date.now()) / 1000));
+      this.broadcast('AUTO_TRANSITION_COUNTDOWN', {
+        countdownSeconds: secondsLeft,
+        deadlineMs: this.autoTransitionDeadline,
+      });
+      if (secondsLeft <= 0) {
+        if (this.autoTransitionCountdownInterval) {
+          clearInterval(this.autoTransitionCountdownInterval);
+          this.autoTransitionCountdownInterval = null;
+        }
+      }
+    }, 1000);
+
+    this.autoTransitionTimeout = setTimeout(async () => {
+      this.cancelAutoTransition();
+      try {
+        await this.drawNextPlayer(editionId, 'AUTO', undefined, 'SYSTEM_AUTO_TRANSITION');
+      } catch (err: any) {
+        console.warn('[Auto-Transition] Next lot could not be drawn automatically:', err.message);
+      }
+    }, durationSeconds * 1000);
+  }
+
+  getIsPaused(): boolean {
+    return this.isPaused;
+  }
+
+  getPausedRemainingMs(): number | null {
+    return this.pausedRemainingMs;
+  }
+
+  async toggleAuctionPause(editionId: string, actor: string = 'StageAdmin') {
+    const release = await this.acquireLock();
+    try {
+      this.isPaused = !this.isPaused;
+      const now = Date.now();
+      const lot = this.getCurrentLot(editionId);
+
+      if (this.isPaused) {
+        if (lot && lot.deadline_ms) {
+          this.pausedRemainingMs = Math.max(0, lot.deadline_ms - now);
+        } else {
+          this.pausedRemainingMs = null;
+        }
+
+        if (this.autoTransitionDeadline) {
+          this.pausedAutoTransitionSeconds = Math.max(0, Math.ceil((this.autoTransitionDeadline - now) / 1000));
+          this.cancelAutoTransition();
+        } else {
+          this.pausedAutoTransitionSeconds = null;
+        }
+
+        execute(
+          `INSERT INTO audit_logs (id, edition_id, actor, role, action, entity, entity_id, new_state, timestamp)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            `AUDIT_${now}_PAUSE`,
+            editionId,
+            actor,
+            'SUPER_ADMIN',
+            'AUCTION_PAUSED',
+            'AUCTION_STATE',
+            editionId,
+            JSON.stringify({ isPaused: true, pausedRemainingMs: this.pausedRemainingMs }),
+            now,
+          ]
+        );
+
+        this.broadcast('AUCTION_PAUSED', {
+          isPaused: true,
+          pausedRemainingMs: this.pausedRemainingMs,
+          pausedAutoTransitionSeconds: this.pausedAutoTransitionSeconds,
+          lot: this.getCurrentLot(editionId),
+          actor,
+        });
+
+        return {
+          success: true,
+          isPaused: true,
+          pausedRemainingMs: this.pausedRemainingMs,
+          message: 'Auction countdown and automatic transitions paused by stage admin.',
+        };
+      } else {
+        let newDeadline: number | null = null;
+        if (lot && this.pausedRemainingMs !== null && this.pausedRemainingMs > 0) {
+          newDeadline = now + this.pausedRemainingMs;
+          execute('UPDATE auction_lots SET deadline_ms = ? WHERE id = ?', [newDeadline, lot.id]);
+          this.pausedRemainingMs = null;
+        }
+
+        if (this.pausedAutoTransitionSeconds && this.pausedAutoTransitionSeconds > 0) {
+          const transSecs = this.pausedAutoTransitionSeconds;
+          this.pausedAutoTransitionSeconds = null;
+          this.scheduleAutoTransitionWithSeconds(editionId, transSecs);
+        }
+
+        execute(
+          `INSERT INTO audit_logs (id, edition_id, actor, role, action, entity, entity_id, new_state, timestamp)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            `AUDIT_${now}_RESUME`,
+            editionId,
+            actor,
+            'SUPER_ADMIN',
+            'AUCTION_RESUMED',
+            'AUCTION_STATE',
+            editionId,
+            JSON.stringify({ isPaused: false, newDeadline }),
+            now,
+          ]
+        );
+
+        const updatedLot = this.getCurrentLot(editionId);
+        this.broadcast('AUCTION_RESUMED', {
+          isPaused: false,
+          lot: updatedLot,
+          actor,
+        });
+
+        return {
+          success: true,
+          isPaused: false,
+          lot: updatedLot,
+          message: 'Auction resumed successfully.',
+        };
+      }
+    } finally {
+      release();
+    }
   }
 
   async sendAuctionNotification(params: {
@@ -169,6 +551,12 @@ class AuctionManager {
     const payload = {
       ...data,
       serverTime: Date.now(),
+      autoTransitionDeadline: this.autoTransitionDeadline,
+      activeSession: this.getActiveSession(),
+      sessionState: this.getSessionState(),
+      customTimerAlert: this.getCustomTimerAlert(),
+      isPaused: this.isPaused,
+      pausedRemainingMs: this.pausedRemainingMs,
     };
     const message = `event: ${eventType}\ndata: ${JSON.stringify(payload)}\n\n`;
     for (const [_, clientRes] of this.sseClients.entries()) {
@@ -187,6 +575,7 @@ class AuctionManager {
     const lot = queryOne(
       `SELECT l.*, p.name as player_name, p.roll_number, p.photo_url, p.program, p.branch, p.academic_year,
               p.skill, p.player_type, p.batting_style, p.bowling_style, p.batting_position, p.batting_hand, p.batting_playing_type, p.bowling_profile,
+              p.is_detained, p.approval_status, p.auction_session as player_auction_session,
               p.experience, p.cricheroes_url, p.cricheroes_mobile, p.stats_json,
               f.name as highest_bidder_name, f.logo_url as highest_bidder_logo
        FROM auction_lots l
@@ -224,6 +613,7 @@ class AuctionManager {
       bowling_style: lot.bowling_style || parsedStats?.bowlingStyle || 'None',
       stats: parsedStats,
       bids,
+      autoTransitionDeadline: this.autoTransitionDeadline,
     };
   }
 
@@ -233,7 +623,7 @@ class AuctionManager {
       const squad = queryAll(
         `SELECT sm.*, p.name as player_name, p.bucket, p.roll_number, p.photo_url, p.player_type, p.branch,
                 p.mobile_number, p.batting_style, p.bowling_style, p.stats_json, p.cricheroes_url, p.skill, p.email,
-                p.is_referred, p.referral_status, p.referred_by_captain_name
+                p.is_referred, p.referral_status, p.referred_by_captain_name, p.is_detained
          FROM squad_members sm
          JOIN players p ON sm.player_id = p.id
          WHERE sm.franchise_id = ? AND (sm.status = 'ACTIVE' OR sm.status IS NULL) AND sm.undone = 0
@@ -297,13 +687,6 @@ class AuctionManager {
         parsedViceCaptainStats = parsedFranchiseStats.viceCaptainStats;
       }
 
-      const referralCountRow = queryOne(
-        `SELECT COUNT(*) as count FROM referral_tokens WHERE franchise_id = ? AND verification_status = 'APPROVED'`,
-        [f.id]
-      );
-      const approvedReferralCount = referralCountRow?.count || 0;
-
-      // Count of all players referred by this franchise (total referred)
       const allReferredCountRow = queryOne(
         `SELECT COUNT(*) as count FROM players WHERE referring_franchise_id = ? AND is_referred = 1`,
         [f.id]
@@ -326,7 +709,7 @@ class AuctionManager {
         bucketCounts,
         auctionPurchasesCount,
         retainedCount,
-        referredCount: Math.max(referredCount, approvedReferralCount, totalReferredPlayers),
+        referredCount: Math.max(referredCount, totalReferredPlayers),
         squadCount: squad.length,
       };
     });
@@ -336,7 +719,8 @@ class AuctionManager {
     const franchises = this.getFranchises(editionId);
     const availablePlayers = queryAll(
       `SELECT bucket, COUNT(*) as count FROM players
-       WHERE edition_id = ? AND is_auction_eligible = 1
+       WHERE edition_id = ?
+         AND (approval_status = 'APPROVED' OR (approval_status IS NULL AND is_auction_eligible = 1))
          AND is_referred = 0
          AND id NOT IN (SELECT player_id FROM squad_members WHERE edition_id = ? AND (status = 'ACTIVE' OR status IS NULL) AND undone = 0)
        GROUP BY bucket`,
@@ -352,7 +736,7 @@ class AuctionManager {
     }
 
     const items: Record<string, any> = {};
-    const mandatoryBuckets = ['B1', 'B2', 'B3', 'B4', 'B5'];
+    const mandatoryBuckets = ['B3', 'B4', 'B2', 'B5', 'B1'];
 
     for (const b of mandatoryBuckets) {
       let totalNeed = 0;
@@ -380,7 +764,8 @@ class AuctionManager {
   }
 
   getUpcomingPlayers(editionId: string, limit: number = 6) {
-    const drawOrder = ['B3', 'B4', 'B2', 'B5', 'B1', 'PG'];
+    const activeSession = this.getActiveSession();
+    const drawOrder = STRICT_BUCKET_AUCTION_ORDER;
     const upcoming: any[] = [];
     const seenIds = new Set<string>();
 
@@ -388,16 +773,18 @@ class AuctionManager {
       if (upcoming.length >= limit) break;
       const candidates = queryAll(
         `SELECT p.id, p.name, p.roll_number, p.photo_url, p.program, p.branch, p.academic_year,
-                p.skill, p.player_type, p.base_price, p.bucket
+                p.skill, p.player_type, p.base_price, p.bucket, p.is_detained, p.random_identifier, p.auction_session
          FROM players p
-         WHERE p.edition_id = ? AND p.is_auction_eligible = 1
+         WHERE p.edition_id = ?
+           AND (p.approval_status = 'APPROVED' OR (p.approval_status IS NULL AND p.is_auction_eligible = 1))
            AND p.is_referred = 0
+           AND (p.auction_session = ? OR p.auction_session IS NULL)
            AND (p.referral_status IS NULL OR p.referral_status = 'NONE')
            AND (p.bucket = ? OR (? = 'PG' AND (p.bucket IS NULL OR p.bucket = 'PG' OR p.program = 'PG')))
            AND p.id NOT IN (SELECT player_id FROM squad_members WHERE edition_id = ? AND (status = 'ACTIVE' OR status IS NULL) AND undone = 0)
            AND p.id NOT IN (SELECT player_id FROM auction_lots WHERE edition_id = ? AND (lot_state = 'SOLD' OR lot_state = 'IN_AUCTION' OR lot_state = 'CALLED'))
          ORDER BY p.roll_number ASC LIMIT ?`,
-        [editionId, bucket, bucket, editionId, editionId, limit - upcoming.length]
+        [editionId, activeSession, bucket, bucket, editionId, editionId, limit - upcoming.length]
       );
 
       for (const cand of candidates) {
@@ -415,24 +802,36 @@ class AuctionManager {
   }
 
   getEligibleGuestDrawPlayers(editionId: string) {
+    const activeSession = this.getActiveSession();
     const candidates = queryAll(
-      `SELECT p.id, p.name, p.roll_number, p.photo_url, p.program, p.branch, p.academic_year,
-              p.skill, p.player_type, p.base_price, p.bucket, p.batting_style, p.bowling_style, p.stats_json
+      `SELECT p.id, p.bucket, p.base_price, p.random_identifier, p.auction_session
        FROM players p
        WHERE p.edition_id = ?
-         AND p.is_auction_eligible = 1
+         AND (p.approval_status = 'APPROVED' OR (p.approval_status IS NULL AND p.is_auction_eligible = 1))
          AND (p.is_referred = 0 OR p.is_referred IS NULL)
+         AND (p.auction_session = ? OR p.auction_session IS NULL)
          AND (p.referral_status IS NULL OR p.referral_status = 'NONE' OR p.referral_status = 'REJECTED')
          AND p.id NOT IN (SELECT player_id FROM squad_members WHERE edition_id = ? AND (status = 'ACTIVE' OR status IS NULL) AND undone = 0)
          AND p.id NOT IN (SELECT player_id FROM auction_lots WHERE edition_id = ? AND (lot_state = 'SOLD' OR lot_state = 'IN_AUCTION' OR lot_state = 'CALLED'))
-       ORDER BY p.name ASC`,
-      [editionId, editionId, editionId]
+       ORDER BY p.bucket ASC, p.id ASC`,
+      [editionId, activeSession, editionId, editionId]
     );
 
-    return candidates.map((c) => ({
-      ...c,
-      academicCategoryLabel: formatAcademicCategory(c.bucket),
-    }));
+    return candidates.map((c, index) => {
+      const cardNumber = index + 1;
+      const cardLabel = `CARD #${cardNumber}`;
+      return {
+        id: c.id,
+        cardNumber,
+        cardLabel,
+        identifiedNumber: `${cardNumber}`,
+        random_identifier: cardLabel,
+        bucket: c.bucket,
+        academicCategoryLabel: formatAcademicCategory(c.bucket),
+        base_price: c.base_price || 20,
+        auction_session: c.auction_session || activeSession,
+      };
+    });
   }
 
   async adjustTimer(seconds: number, editionId: string, actor: string = 'Admin') {
@@ -490,6 +889,11 @@ class AuctionManager {
   async placeBid(franchiseId: string, editionId: string, actor: string = 'Franchise') {
     const release = await this.acquireLock();
     try {
+      const sessionState = this.getSessionState();
+      if (sessionState.endsWith('_ENDED')) {
+        throw new Error('SESSION_ENDED: Current auction session has been ended by Administrator. No new bids can be accepted.');
+      }
+
       const lot = this.getCurrentLot(editionId);
       if (!lot) {
         throw new Error('NO_ACTIVE_LOT: No player currently in auction.');
@@ -605,6 +1009,15 @@ class AuctionManager {
       this.broadcast('BID_PLACED', {
         lot: updatedLot,
         bid: { franchiseId, amount: nextLegalBid, sequence: nextSequence, timestamp: now },
+        bidNotification: {
+          playerName: lot.player_name,
+          franchiseName: franchise.name,
+          franchiseLogo: franchise.logo_url,
+          amount: nextLegalBid,
+          lotId: lot.id,
+          timestamp: now,
+          message: `🏏 BID ALERT: ${lot.player_name} bid by ${franchise.name} for ₹${nextLegalBid} Lakhs!`,
+        },
       });
 
       return { success: true, lot: updatedLot };
@@ -627,7 +1040,11 @@ class AuctionManager {
     return { success: true };
   }
 
-  async strikeHammer(editionId: string, actor: string = 'SuperAdmin') {
+  async strikeHammer(
+    editionId: string,
+    actor: string = 'SuperAdmin',
+    action: 'HAMMER_SALE' | 'PLAYER_UNSOLD' = 'HAMMER_SALE'
+  ) {
     const release = await this.acquireLock();
     try {
       const lot = this.getCurrentLot(editionId);
@@ -635,7 +1052,7 @@ class AuctionManager {
 
       const now = Date.now();
 
-      if (lot.highest_bidder_id && lot.bid_count > 0) {
+      if (action !== 'PLAYER_UNSOLD' && lot.highest_bidder_id && lot.bid_count > 0) {
         const franchise = queryOne('SELECT * FROM franchises WHERE id = ?', [lot.highest_bidder_id]);
         if (!franchise) throw new Error('WINNING_FRANCHISE_NOT_FOUND');
 
@@ -728,6 +1145,8 @@ class AuctionManager {
           lotState: 'SOLD',
         });
 
+        this.scheduleAutoTransition(editionId);
+
         return { sold: true, playerId: lot.player_id, franchiseId: franchise.id, price: finalPrice, lotState: 'SOLD' };
       }
 
@@ -746,6 +1165,9 @@ class AuctionManager {
         playerName: lot.player_name,
         lotState: 'UNSOLD',
       });
+
+      this.scheduleAutoTransition(editionId);
+
       return { sold: false, playerId: lot.player_id, lotState: 'UNSOLD' };
     } finally {
       release();
@@ -755,6 +1177,7 @@ class AuctionManager {
   async undoSale(saleId: string, reason: string, actor: string = 'SuperAdmin') {
     const release = await this.acquireLock();
     try {
+      this.cancelAutoTransition();
       let sale = queryOne('SELECT * FROM sales WHERE id = ?', [saleId]);
       if (!sale) {
         sale = queryOne('SELECT s.* FROM sales s JOIN squad_members sm ON s.player_id = sm.player_id WHERE sm.id = ?', [saleId])
@@ -904,38 +1327,50 @@ class AuctionManager {
   async drawNextPlayer(
     editionId: string,
     mode: 'AUTO' | 'GUEST' = 'AUTO',
-    selectedPlayerId?: string,
+    selectedIdOrIdentifier?: string,
     actor: string = 'SuperAdmin'
   ) {
     const release = await this.acquireLock();
     try {
+      this.cancelAutoTransition();
+
+      const sessionState = this.getSessionState();
+      if (sessionState.endsWith('_ENDED')) {
+        throw new Error(`AUCTION_SESSION_ENDED: Session ${this.activeSession} has concluded. Switch or start the appropriate session.`);
+      }
+
       const activeLot = this.getCurrentLot(editionId);
       if (activeLot) {
         throw new Error('ACTIVE_LOT_EXISTS: Cannot call next player while a lot is currently open in auction.');
       }
 
+      const currentSession = this.getActiveSession();
       let targetPlayer: any = null;
 
-      if (mode === 'GUEST' && selectedPlayerId) {
+      if (mode === 'GUEST' && selectedIdOrIdentifier) {
         targetPlayer = queryOne(
           `SELECT p.* FROM players p
-           WHERE p.id = ? AND p.edition_id = ?
-             AND p.is_auction_eligible = 1
+           WHERE (p.id = ? OR p.random_identifier = ?)
+             AND p.edition_id = ?
+             AND (p.approval_status = 'APPROVED' OR (p.approval_status IS NULL AND p.is_auction_eligible = 1))
+             AND (p.auction_session = ? OR p.auction_session IS NULL)
              AND (p.is_referred = 0 OR p.is_referred IS NULL)
              AND (p.referral_status IS NULL OR p.referral_status = 'NONE' OR p.referral_status = 'REJECTED')
              AND p.id NOT IN (SELECT player_id FROM squad_members WHERE edition_id = ? AND (status = 'ACTIVE' OR status IS NULL) AND undone = 0)
              AND p.id NOT IN (SELECT player_id FROM auction_lots WHERE edition_id = ? AND (lot_state = 'SOLD' OR lot_state = 'IN_AUCTION' OR lot_state = 'CALLED'))`,
-          [selectedPlayerId, editionId, editionId, editionId]
+          [selectedIdOrIdentifier, selectedIdOrIdentifier, editionId, currentSession, editionId, editionId]
         );
         if (!targetPlayer) {
-          throw new Error('PLAYER_NOT_ELIGIBLE_FOR_GUEST_DRAW: Selected player is either referred, sold, or ineligible.');
+          throw new Error('PLAYER_NOT_ELIGIBLE_FOR_GUEST_DRAW: Selected player identifier is invalid, referred, unapproved, or already auctioned.');
         }
       } else {
-        const drawOrder = ['B3', 'B4', 'B2', 'B5', 'B1', 'PG'];
+        const drawOrder = STRICT_BUCKET_AUCTION_ORDER;
         for (const bucket of drawOrder) {
           const candidate = queryOne(
             `SELECT p.* FROM players p
-             WHERE p.edition_id = ? AND p.is_auction_eligible = 1
+             WHERE p.edition_id = ?
+               AND (p.approval_status = 'APPROVED' OR (p.approval_status IS NULL AND p.is_auction_eligible = 1))
+               AND (p.auction_session = ? OR p.auction_session IS NULL)
                AND (p.is_referred = 0 OR p.is_referred IS NULL)
                AND (p.referral_status IS NULL OR p.referral_status = 'NONE' OR p.referral_status = 'REJECTED')
                AND (p.bucket = ? OR (? = 'PG' AND (p.bucket IS NULL OR p.bucket = 'PG' OR p.program = 'PG')))
@@ -943,7 +1378,7 @@ class AuctionManager {
                AND p.id NOT IN (SELECT player_id FROM auction_lots WHERE edition_id = ? AND lot_state = 'SOLD')
                AND p.id NOT IN (SELECT player_id FROM auction_lots WHERE edition_id = ? AND lot_state = 'IN_AUCTION')
              ORDER BY p.roll_number ASC LIMIT 1`,
-            [editionId, bucket, bucket, editionId, editionId, editionId]
+            [editionId, currentSession, bucket, bucket, editionId, editionId, editionId]
           );
 
           if (candidate) {
@@ -954,7 +1389,7 @@ class AuctionManager {
       }
 
       if (!targetPlayer) {
-        throw new Error('NO_AVAILABLE_PLAYERS: All eligible players in this round have been called or sold.');
+        throw new Error(`NO_AVAILABLE_PLAYERS: All approved players for Session ${currentSession} in the fixed bucket order have been called or sold.`);
       }
 
       const now = Date.now();
@@ -964,9 +1399,27 @@ class AuctionManager {
 
       executeTransaction(() => {
         execute(
-          `INSERT INTO auction_lots (id, edition_id, round, bucket, player_id, draw_number, draw_mode, opening_price, current_price, highest_bidder_id, bid_count, deadline_ms, started_at, lot_state, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [lotId, editionId, 1, targetPlayer.bucket || 'PG', targetPlayer.id, null, mode, openingPrice, openingPrice, null, 0, deadlineMs, now, 'CALLED', now]
+          `INSERT INTO auction_lots (id, edition_id, round, bucket, player_id, draw_number, draw_mode, random_identifier, auction_session, opening_price, current_price, highest_bidder_id, bid_count, deadline_ms, started_at, lot_state, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            lotId,
+            editionId,
+            1,
+            targetPlayer.bucket || 'PG',
+            targetPlayer.id,
+            null,
+            mode,
+            targetPlayer.random_identifier || null,
+            targetPlayer.auction_session || currentSession,
+            openingPrice,
+            openingPrice,
+            null,
+            0,
+            deadlineMs,
+            now,
+            'CALLED',
+            now,
+          ]
         );
 
         execute(
@@ -976,12 +1429,12 @@ class AuctionManager {
             `AUDIT_${now}`,
             editionId,
             actor,
-            mode === 'GUEST' ? 'GUEST' : 'SUPER_ADMIN',
+            mode === 'GUEST' ? 'GUEST' : (actor === 'SYSTEM_AUTO_TRANSITION' ? 'SYSTEM' : 'SUPER_ADMIN'),
             mode === 'GUEST' ? 'GUEST_DRAW_CALLED' : 'PLAYER_CALLED',
             'PLAYER',
             targetPlayer.id,
-            JSON.stringify({ lotId, openingPrice, mode }),
-            mode === 'GUEST' ? 'Player drawn via Guest Draw Mode' : 'Player drawn via Random Draw Mode',
+            JSON.stringify({ lotId, openingPrice, mode, bucket: targetPlayer.bucket, session: currentSession }),
+            mode === 'GUEST' ? 'Player drawn via Guest Draw Mode with masked identifier' : 'Player drawn in fixed bucket order',
             now,
           ]
         );
@@ -996,20 +1449,35 @@ class AuctionManager {
   }
 
   async skipLot(editionId: string, actor: string = 'SuperAdmin', reason: string = 'Skipped by Super Admin') {
-    const lot = this.getCurrentLot(editionId);
-    if (!lot) throw new Error('NO_ACTIVE_LOT: No active lot to skip.');
-    const now = Date.now();
+    const release = await this.acquireLock();
+    try {
+      this.cancelAutoTransition();
+      const lot = this.getCurrentLot(editionId);
+      if (!lot) throw new Error('NO_ACTIVE_LOT: No active lot to skip.');
+      const now = Date.now();
 
-    executeTransaction(() => {
-      execute(`UPDATE auction_lots SET lot_state = 'SKIPPED', deadline_ms = NULL WHERE id = ?`, [lot.id]);
-      execute(
-        `INSERT INTO audit_logs (id, edition_id, actor, role, action, entity, entity_id, reason, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [`AUDIT_${now}`, editionId, actor, 'SUPER_ADMIN', 'PLAYER_SKIPPED', 'PLAYER', lot.player_id, reason, now]
-      );
-    });
+      executeTransaction(() => {
+        execute(`UPDATE auction_lots SET lot_state = 'SKIPPED', deadline_ms = NULL WHERE id = ?`, [lot.id]);
+        execute(
+          `INSERT INTO audit_logs (id, edition_id, actor, role, action, entity, entity_id, reason, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [`AUDIT_${now}`, editionId, actor, 'SUPER_ADMIN', 'PLAYER_SKIPPED', 'PLAYER', lot.player_id, reason, now]
+        );
+      });
 
-    this.broadcast('PLAYER_SKIPPED', { lotId: lot.id, playerId: lot.player_id });
-    return { success: true };
+      this.broadcast('PLAYER_SKIPPED', { lotId: lot.id, playerId: lot.player_id });
+      return { success: true };
+    } finally {
+      release();
+    }
+  }
+
+  resetAuctionState() {
+    this.cancelAutoTransition();
+    this.isPaused = false;
+    this.pausedRemainingMs = null;
+    this.pausedAutoTransitionSeconds = null;
+    this.customTimerAlert = null;
+    this.broadcast('STATE_UPDATED', { reason: 'AUCTION_RESET' });
   }
 }
 

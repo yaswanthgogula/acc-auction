@@ -26,14 +26,12 @@ export const AvanthiLogo: React.FC<AvanthiLogoProps> = ({
 
   return (
     <div className={`flex items-center gap-3 select-none ${className}`}>
-      {/* Official AIET Crest SVG */}
       <div className={`relative ${dimensions} shrink-0 drop-shadow-[0_0_12px_rgba(220,38,38,0.4)]`}>
         <svg
           viewBox="0 0 200 200"
           className="w-full h-full"
           xmlns="http://www.w3.org/2000/svg"
         >
-          {/* Outer Laurel Wreath (Red / Crimson Leaves) */}
           <g fill="#b91c1c" stroke="#991b1b" strokeWidth="0.5">
             <path d="M42,162 C26,144 18,122 18,98 C18,74 26,52 42,34 C44,36 43,40 40,43 C28,58 22,77 22,98 C22,119 28,138 40,153 Z" />
             <path d="M22,96 C10,92 6,80 12,70 C16,74 22,78 24,84 Z" />
@@ -64,11 +62,9 @@ export const AvanthiLogo: React.FC<AvanthiLogoProps> = ({
             <path d="M88,184 Q100,174 112,184 L126,198 L114,194 L100,186 L86,194 L74,198 Z" />
           </g>
 
-          {/* Yellow Outer Circular Band */}
           <circle cx="100" cy="100" r="70" fill="#facc15" stroke="#ca8a04" strokeWidth="2.5" />
           <circle cx="100" cy="100" r="54" fill="#ffffff" stroke="#ca8a04" strokeWidth="1.5" />
 
-          {/* Text Arc: AVANTHI INSTITUTE OF ENGG & TECH */}
           <defs>
             <path
               id="aiet-arc-upper"
@@ -105,7 +101,6 @@ export const AvanthiLogo: React.FC<AvanthiLogoProps> = ({
             </textPath>
           </text>
 
-          {/* Center Graphic: Desktop Monitor with Om Symbol */}
           <polygon points="92,138 108,138 105,145 95,145" fill="#334155" />
           <rect x="88" y="145" width="24" height="2.5" rx="1" fill="#475569" />
 

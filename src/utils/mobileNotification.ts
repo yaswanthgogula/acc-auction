@@ -2,9 +2,6 @@
  * ============================================================================
  * ACC MOBILE & DESKTOP NATIVE PUSH NOTIFICATION UTILITY
  * ============================================================================
- * Enables broadcast auction notices (e.g. "Auction starts in X minutes")
- * to deliver directly to the user's mobile device / desktop notification tray
- * even when the user is not actively using or viewing the app.
  */
 
 class MobileNotificationService {
@@ -62,14 +59,12 @@ class MobileNotificationService {
     if (Notification.permission !== 'granted') return;
 
     try {
-      // Vibrate mobile device if supported
       if ('vibrate' in navigator) {
         try {
           navigator.vibrate([300, 150, 300, 150, 400]);
         } catch {}
       }
 
-      // If service worker is ready, use it for genuine background mobile push alerts
       if ('serviceWorker' in navigator) {
         try {
           const reg = await navigator.serviceWorker.ready;
@@ -87,7 +82,6 @@ class MobileNotificationService {
         } catch {}
       }
 
-      // Fallback to standard Window Notification
       const notif = new Notification(title, {
         body,
         icon: '/favicon.ico',

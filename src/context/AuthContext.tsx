@@ -2,6 +2,8 @@
  * ============================================================================
  * ACC AUTHENTICATION CONTEXT & ROLE-BASED ACCESS CONTROL
  * ============================================================================
+ * Google Login removed as per Requirement 4.
+ * Keeps Player login, Franchise login, Admin/Super Admin login, and OTP capabilities.
  */
 
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
@@ -26,7 +28,6 @@ interface AuthContextType {
   token: string | null;
   login: (username: string, password: string, requestedRole?: UserRole) => Promise<{ success: boolean; error?: string; user?: UserSession }>;
   registerAdmin: (username: string, password: string, confirmPassword?: string, email?: string) => Promise<{ success: boolean; error?: string; user?: UserSession }>;
-  signInWithGoogle: () => Promise<{ success: boolean; error?: string; user?: UserSession }>;
   logout: () => void;
   refreshSession: () => Promise<void>;
   getAuthToken: () => Promise<string | null>;
@@ -57,14 +58,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return token;
   };
 
-  const signInWithGoogle = async (): Promise<{ success: boolean; error?: string; user?: UserSession }> => {
-    try {
-      return await login('admin', 'admin123', 'SUPER_ADMIN');
-    } catch (err: any) {
-      return { success: false, error: err.message || 'Google sign-in failed' };
-    }
-  };
-
   const login = async (username: string, password: string, requestedRole?: UserRole): Promise<{ success: boolean; error?: string; user?: UserSession }> => {
     try {
       const res = await fetch('/api/auth/login', {
@@ -92,7 +85,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         body: JSON.stringify({ username, password, confirmPassword, email }),
       });
       const data = await res.json();
-      if (!res.ok || !data.success) {
+      if (!data.success) {
         return { success: false, error: data.error || 'Admin registration failed' };
       }
       return await login(username, password, 'SUPER_ADMIN');
@@ -132,7 +125,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         token,
         login,
         registerAdmin,
-        signInWithGoogle,
         logout,
         refreshSession,
         getAuthToken,

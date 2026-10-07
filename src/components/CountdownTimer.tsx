@@ -8,10 +8,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Timer, Plus, RotateCcw, Volume2, VolumeX, AlertCircle } from 'lucide-react';
 import { auctionSound } from '../utils/auctionSound';
+import { clockSync } from '../utils/clockSync';
 
 interface CountdownTimerProps {
   deadlineMs: number | null;
-  serverTime: number;
+  serverTime?: number;
+  isPaused?: boolean;
+  pausedSeconds?: number;
   size?: 'sm' | 'md' | 'lg' | 'xl';
   showControls?: boolean;
   onAdjustTimer?: (seconds: number) => void;
@@ -22,24 +25,30 @@ interface CountdownTimerProps {
 export const CountdownTimer: React.FC<CountdownTimerProps> = ({
   deadlineMs,
   serverTime,
+  isPaused = false,
+  pausedSeconds,
   size = 'md',
   showControls = false,
   onAdjustTimer,
   onResetTimer,
   onExpire,
 }) => {
-  const [secondsRemaining, setSecondsRemaining] = useState<number | null>(null);
+  const [secondsRemaining, setSecondsRemaining] = useState<number | null>(() => {
+    if (isPaused && pausedSeconds !== undefined) return pausedSeconds;
+    if (!deadlineMs) return null;
+    return clockSync.calculateRemainingSeconds(deadlineMs);
+  });
   const [soundEnabled, setSoundEnabled] = useState(true);
   const lastBeepSecond = useRef<number | null>(null);
-  const clockOffsetRef = useRef<number>(0);
 
   useEffect(() => {
-    if (serverTime) {
-      clockOffsetRef.current = serverTime - Date.now();
+    if (isPaused) {
+      if (pausedSeconds !== undefined) {
+        setSecondsRemaining(pausedSeconds);
+      }
+      return;
     }
-  }, [serverTime]);
 
-  useEffect(() => {
     if (!deadlineMs) {
       setSecondsRemaining(null);
       lastBeepSecond.current = null;
@@ -47,11 +56,10 @@ export const CountdownTimer: React.FC<CountdownTimerProps> = ({
     }
 
     const updateTimer = () => {
-      const currentServerTime = Date.now() + clockOffsetRef.current;
-      const diff = Math.max(0, Math.ceil((deadlineMs - currentServerTime) / 1000));
+      const diff = clockSync.calculateRemainingSeconds(deadlineMs);
       setSecondsRemaining(diff);
 
-      if (diff <= 5 && diff > 0 && lastBeepSecond.current !== diff) {
+      if (diff !== null && diff <= 5 && diff > 0 && lastBeepSecond.current !== diff) {
         lastBeepSecond.current = diff;
         if (soundEnabled) {
           auctionSound.playTimerBeep(diff <= 2);
@@ -67,9 +75,9 @@ export const CountdownTimer: React.FC<CountdownTimerProps> = ({
     };
 
     updateTimer();
-    const interval = setInterval(updateTimer, 200);
+    const interval = setInterval(updateTimer, 100);
     return () => clearInterval(interval);
-  }, [deadlineMs, onExpire, soundEnabled]);
+  }, [deadlineMs, onExpire, soundEnabled, isPaused, pausedSeconds]);
 
   const sizeClasses = {
     sm: 'text-xs font-bold px-2.5 py-1',
@@ -101,10 +109,12 @@ export const CountdownTimer: React.FC<CountdownTimerProps> = ({
   }
 
   const isExpired = secondsRemaining === 0;
-  const isGoingTwice = secondsRemaining <= 5 && !isExpired;
-  const isGoingOnce = secondsRemaining <= 10 && secondsRemaining > 5;
+  const isGoingTwice = secondsRemaining <= 5 && !isExpired && !isPaused;
+  const isGoingOnce = secondsRemaining <= 10 && secondsRemaining > 5 && !isPaused;
 
-  const colorClasses = isExpired
+  const colorClasses = isPaused
+    ? 'bg-amber-950/95 border-amber-400 text-amber-300 drop-shadow-[0_0_25px_rgba(245,158,11,0.8)]'
+    : isExpired
     ? 'bg-red-950/95 border-red-500 text-red-300 drop-shadow-[0_0_25px_rgba(239,68,68,0.8)] animate-pulse'
     : isGoingTwice
     ? 'bg-red-950/90 border-red-500 text-red-400 drop-shadow-[0_0_20px_rgba(239,68,68,0.6)] animate-pulse'
@@ -112,7 +122,11 @@ export const CountdownTimer: React.FC<CountdownTimerProps> = ({
     ? 'bg-amber-950/90 border-amber-500 text-amber-300 drop-shadow-[0_0_15px_rgba(245,158,11,0.5)]'
     : 'bg-emerald-950/90 border-emerald-500 text-emerald-400 drop-shadow-[0_0_15px_rgba(16,185,129,0.4)]';
 
-  const stageBadge = isExpired ? (
+  const stageBadge = isPaused ? (
+    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-500/30 text-amber-300 border border-amber-400 text-[10px] sm:text-xs font-black uppercase tracking-wider animate-pulse">
+      ⏸️ AUCTION PAUSED
+    </span>
+  ) : isExpired ? (
     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-600/40 text-red-200 border border-red-500 text-[10px] sm:text-xs font-black uppercase tracking-wider animate-bounce">
       <AlertCircle className="w-3 h-3" /> Time Expired • Hammer Ready
     </span>

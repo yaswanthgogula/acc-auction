@@ -11,18 +11,19 @@ import { Pool } from 'pg';
 import dotenv from 'dotenv';
 dotenv.config();
 
-const DEFAULT_SUPABASE_URL = "postgresql://postgres:Yaswanth%402006@db.aywdrxhjdogpqnhserem.supabase.co:5432/postgres";
-
 export function isValidPostgresUrl(urlStr?: string | null): boolean {
   if (!urlStr || typeof urlStr !== 'string') return false;
   const trimmed = urlStr.trim();
   if (!trimmed.startsWith('postgres://') && !trimmed.startsWith('postgresql://')) {
     return false;
   }
+  if (trimmed.includes('HOST') || trimmed.includes('REDACTED') || trimmed.includes('USER:')) {
+    return false;
+  }
   try {
     const parsed = new URL(trimmed);
     const host = parsed.hostname;
-    return Boolean(host && host !== 'base' && (host === 'localhost' || host.includes('.') || host.includes(':')));
+    return Boolean(host && host !== 'HOST' && host !== 'base' && (host === 'localhost' || host.includes('.')));
   } catch {
     return false;
   }
@@ -30,18 +31,18 @@ export function isValidPostgresUrl(urlStr?: string | null): boolean {
 
 let pool: Pool | null = null;
 
-export function getConnectionString(): string {
+export function getConnectionString(): string | null {
   if (isValidPostgresUrl(process.env.DATABASE_URL)) return process.env.DATABASE_URL!.trim();
   if (isValidPostgresUrl(process.env.SUPABASE_DB_URL)) return process.env.SUPABASE_DB_URL!.trim();
   if (isValidPostgresUrl(process.env.POSTGRES_URL)) return process.env.POSTGRES_URL!.trim();
 
-  return DEFAULT_SUPABASE_URL;
+  return null;
 }
 
 export function getPool(): Pool | null {
-  if (pool) return pool;
   const connStr = getConnectionString();
   if (!connStr) return null;
+  if (pool) return pool;
   try {
     const isLocal = connStr.includes('localhost') || connStr.includes('127.0.0.1');
     pool = new Pool({
@@ -162,6 +163,8 @@ export async function initCloudSql(): Promise<void> {
         name TEXT NOT NULL,
         year INTEGER NOT NULL,
         status TEXT NOT NULL DEFAULT 'ACTIVE',
+        active_session INTEGER DEFAULT 1,
+        session_state TEXT DEFAULT 'SESSION_1_ACTIVE',
         created_at BIGINT NOT NULL
       );
 
@@ -253,11 +256,13 @@ export async function initCloudSql(): Promise<void> {
         base_price INTEGER,
         payment_status TEXT DEFAULT 'REGISTERED',
         registration_status TEXT DEFAULT 'REGISTERED',
-        is_auction_eligible INTEGER DEFAULT 1,
-        ineligibility_reasons TEXT,
-        is_editing_blocked INTEGER DEFAULT 0,
-        is_detained_override INTEGER DEFAULT 0,
-        detention_reason TEXT,
+        registration_phase INTEGER DEFAULT 1,
+        approval_status TEXT DEFAULT 'PENDING',
+        rejection_reason TEXT,
+        is_auction_eligible INTEGER DEFAULT 0,
+        is_detained INTEGER DEFAULT 0,
+        auction_session INTEGER DEFAULT 1,
+        random_identifier TEXT,
         is_referred INTEGER DEFAULT 0,
         referral_token TEXT,
         referred_by_captain_id TEXT,
@@ -307,6 +312,8 @@ export async function initCloudSql(): Promise<void> {
         player_id TEXT NOT NULL,
         draw_number INTEGER,
         draw_mode TEXT NOT NULL DEFAULT 'AUTO',
+        random_identifier TEXT,
+        auction_session INTEGER DEFAULT 1,
         lot_state TEXT NOT NULL DEFAULT 'AVAILABLE',
         opening_price INTEGER NOT NULL,
         current_price INTEGER NOT NULL,
@@ -396,55 +403,17 @@ export async function initCloudSql(): Promise<void> {
       );
     `);
 
-    // Ensure all optional columns exist
     const columnsToAdd = [
-      'ALTER TABLE franchises ADD COLUMN IF NOT EXISTS logo_url TEXT;',
-      'ALTER TABLE franchises ADD COLUMN IF NOT EXISTS leader_photo_url TEXT;',
-      'ALTER TABLE franchises ADD COLUMN IF NOT EXISTS faculty_branch TEXT;',
-      'ALTER TABLE franchises ADD COLUMN IF NOT EXISTS faculty_mobile TEXT;',
-      'ALTER TABLE franchises ADD COLUMN IF NOT EXISTS captain_specialty TEXT;',
-      'ALTER TABLE franchises ADD COLUMN IF NOT EXISTS captain_batting_style TEXT;',
-      'ALTER TABLE franchises ADD COLUMN IF NOT EXISTS captain_bowling_style TEXT;',
-      'ALTER TABLE franchises ADD COLUMN IF NOT EXISTS captain_cricheroes_url TEXT;',
-      'ALTER TABLE franchises ADD COLUMN IF NOT EXISTS captain_details_json TEXT;',
-      'ALTER TABLE franchises ADD COLUMN IF NOT EXISTS captain_stats_json TEXT;',
-      'ALTER TABLE franchises ADD COLUMN IF NOT EXISTS vice_captain_specialty TEXT;',
-      'ALTER TABLE franchises ADD COLUMN IF NOT EXISTS vice_captain_batting_style TEXT;',
-      'ALTER TABLE franchises ADD COLUMN IF NOT EXISTS vice_captain_bowling_style TEXT;',
-      'ALTER TABLE franchises ADD COLUMN IF NOT EXISTS vice_captain_cricheroes_url TEXT;',
-      'ALTER TABLE franchises ADD COLUMN IF NOT EXISTS vice_captain_details_json TEXT;',
-      'ALTER TABLE franchises ADD COLUMN IF NOT EXISTS vice_captain_stats_json TEXT;',
-      'ALTER TABLE franchises ADD COLUMN IF NOT EXISTS franchise_stats_json TEXT;',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS batting_position TEXT;',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS batting_hand TEXT;',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS batting_playing_type TEXT;',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS bowling_profile TEXT;',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS experience TEXT;',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS previous_acc TEXT;',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS cricheroes_url TEXT;',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS cricheroes_mobile TEXT;',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS cricheroes_status TEXT DEFAULT \'PROFILE_CREATION_PENDING\';',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS payment_status TEXT DEFAULT \'REGISTERED\';',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS registration_status TEXT DEFAULT \'REGISTERED\';',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS ineligibility_reasons TEXT;',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS is_editing_blocked INTEGER DEFAULT 0;',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS is_detained_override INTEGER DEFAULT 0;',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS detention_reason TEXT;',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS is_referred INTEGER DEFAULT 0;',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS referral_token TEXT;',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS referred_by_captain_id TEXT;',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS referred_by_captain_name TEXT;',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS referring_franchise_id TEXT;',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS referring_franchise_name TEXT;',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS referral_status TEXT DEFAULT \'NONE\';',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS referral_verified_at BIGINT;',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS referral_verified_by TEXT;',
-      'ALTER TABLE players ADD COLUMN IF NOT EXISTS updated_at BIGINT;',
-      'ALTER TABLE squad_members ADD COLUMN IF NOT EXISTS status TEXT DEFAULT \'ACTIVE\';',
-      'ALTER TABLE squad_members ADD COLUMN IF NOT EXISTS removed_at BIGINT;',
-      'ALTER TABLE squad_members ADD COLUMN IF NOT EXISTS removed_by TEXT;',
-      'ALTER TABLE squad_members ADD COLUMN IF NOT EXISTS removal_reason TEXT;',
-      'ALTER TABLE auction_lots ADD COLUMN IF NOT EXISTS draw_mode TEXT DEFAULT \'AUTO\';',
+      'ALTER TABLE players ADD COLUMN IF NOT EXISTS is_detained INTEGER DEFAULT 0;',
+      'ALTER TABLE players ADD COLUMN IF NOT EXISTS registration_phase INTEGER DEFAULT 1;',
+      'ALTER TABLE players ADD COLUMN IF NOT EXISTS approval_status TEXT DEFAULT \'PENDING\';',
+      'ALTER TABLE players ADD COLUMN IF NOT EXISTS rejection_reason TEXT;',
+      'ALTER TABLE players ADD COLUMN IF NOT EXISTS auction_session INTEGER DEFAULT 1;',
+      'ALTER TABLE players ADD COLUMN IF NOT EXISTS random_identifier TEXT;',
+      'ALTER TABLE editions ADD COLUMN IF NOT EXISTS active_session INTEGER DEFAULT 1;',
+      'ALTER TABLE editions ADD COLUMN IF NOT EXISTS session_state TEXT DEFAULT \'SESSION_1_ACTIVE\';',
+      'ALTER TABLE auction_lots ADD COLUMN IF NOT EXISTS random_identifier TEXT;',
+      'ALTER TABLE auction_lots ADD COLUMN IF NOT EXISTS auction_session INTEGER DEFAULT 1;',
     ];
 
     for (const sql of columnsToAdd) {
@@ -607,10 +576,11 @@ export async function savePlayerToCloudSql(player: any): Promise<void> {
         id, edition_id, roll_number, name, email, mobile_number, photo_url,
         program, branch, academic_year, bucket, skill, player_type,
         batting_style, bowling_style, batting_position, batting_hand, batting_playing_type, bowling_profile,
-        stats_json, base_price, is_auction_eligible, is_referred, referral_token,
-        referred_by_captain_id, referred_by_captain_name, referring_franchise_id, referring_franchise_name,
-        referral_status, created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31)
+        stats_json, base_price, is_auction_eligible, is_detained, registration_phase, approval_status,
+        auction_session, random_identifier,
+        is_referred, referral_token, referred_by_captain_id, referred_by_captain_name,
+        referring_franchise_id, referring_franchise_name, referral_status, created_at, updated_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36)
       ON CONFLICT (id) DO UPDATE SET 
         name = EXCLUDED.name,
         email = EXCLUDED.email,
@@ -631,6 +601,11 @@ export async function savePlayerToCloudSql(player: any): Promise<void> {
         stats_json = EXCLUDED.stats_json,
         base_price = EXCLUDED.base_price,
         is_auction_eligible = EXCLUDED.is_auction_eligible,
+        is_detained = EXCLUDED.is_detained,
+        registration_phase = EXCLUDED.registration_phase,
+        approval_status = EXCLUDED.approval_status,
+        auction_session = EXCLUDED.auction_session,
+        random_identifier = EXCLUDED.random_identifier,
         is_referred = EXCLUDED.is_referred,
         referral_token = EXCLUDED.referral_token,
         referred_by_captain_id = EXCLUDED.referred_by_captain_id,
@@ -645,7 +620,9 @@ export async function savePlayerToCloudSql(player: any): Promise<void> {
         player.academic_year, player.bucket, player.skill, player.player_type, 
         player.batting_style, player.bowling_style, player.batting_position || null,
         player.batting_hand || null, player.batting_playing_type || null, player.bowling_profile || null,
-        player.stats_json, player.base_price, player.is_auction_eligible ?? 1,
+        player.stats_json, player.base_price, player.is_auction_eligible ?? 0,
+        player.is_detained ?? 0, player.registration_phase ?? 1, player.approval_status || 'PENDING',
+        player.auction_session ?? 1, player.random_identifier || null,
         player.is_referred ?? 0, player.referral_token || null,
         player.referred_by_captain_id || null, player.referred_by_captain_name || null,
         player.referring_franchise_id || null, player.referring_franchise_name || null,

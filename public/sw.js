@@ -15,7 +15,7 @@ self.addEventListener('push', (event) => {
     }
   } catch (e) {
     if (event.data) {
-      data.message = event.data.text();
+      data = event.data.text();
     }
   }
 
