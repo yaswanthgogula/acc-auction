@@ -44,7 +44,7 @@ import {
 } from 'lucide-react';
 
 export const AdminDashboard: React.FC = () => {
-  const { user, login } = useAuth();
+  const { user, login, registerAdmin } = useAuth();
   const isAdmin = user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN' || user?.role === 'OPERATOR';
 
   const [adminGateUsername, setAdminGateUsername] = useState('');
@@ -118,6 +118,24 @@ export const AdminDashboard: React.FC = () => {
   const [newViceCaptainName, setNewViceCaptainName] = useState('');
   const [newViceCaptainMobile, setNewViceCaptainMobile] = useState('');
   const [newViceCaptainRoll, setNewViceCaptainRoll] = useState('');
+  const [newViceCaptainRole, setNewViceCaptainRole] = useState<'BATTER' | 'BOWLER' | 'ALL_ROUNDER' | 'WICKET_KEEPER'>('ALL_ROUNDER');
+  const emptyLeadershipStats = {
+    matches: '',
+    runs: '',
+    highestScore: '',
+    battingAvg: '',
+    strikeRate: '',
+    wickets: '',
+    economy: '',
+    bestBowling: '',
+  };
+  const [newCaptainStats, setNewCaptainStats] = useState(emptyLeadershipStats);
+  const [newViceCaptainStats, setNewViceCaptainStats] = useState(emptyLeadershipStats);
+  const [newAdminUsername, setNewAdminUsername] = useState('');
+  const [newAdminPassword, setNewAdminPassword] = useState('');
+  const [newAdminRole, setNewAdminRole] = useState<'ADMIN' | 'OPERATOR'>('ADMIN');
+  const [submittingAdmin, setSubmittingAdmin] = useState(false);
+  const [confirmDeletePlayer, setConfirmDeletePlayer] = useState<{ id: string; name: string } | null>(null);
 
   const [credentialsModal, setCredentialsModal] = useState<{
     franchiseId: string;
@@ -342,43 +360,61 @@ export const AdminDashboard: React.FC = () => {
       setActionError('Franchise Name is required.');
       return;
     }
-    if (!newCaptainName.trim()) {
-      setActionError('Captain Name is required.');
+    if (!newCoordinator.trim() || !newCoordinatorMobile.trim() || !newCoordinatorBranch.trim()) {
+      setActionError('Coordinator Name, Mobile Number, and Department are required.');
       return;
     }
-    if (!newViceCaptainName.trim()) {
-      setActionError('Vice-Captain Name is required.');
+    if (!newCaptainName.trim() || !newCaptainMobile.trim() || !newCaptainRoll.trim() || !newCaptainRole) {
+      setActionError('Captain Name, Mobile Number, Roll Number, and Playing Role are required.');
+      return;
+    }
+    if (!newViceCaptainName.trim() || !newViceCaptainMobile.trim() || !newViceCaptainRoll.trim() || !newViceCaptainRole) {
+      setActionError('Vice-Captain Name, Mobile Number, Roll Number, and Playing Role are required.');
       return;
     }
 
     setSubmittingFranchise(true);
     try {
+      const playingRoleLabel = (role: string) =>
+        role === 'BATTER' ? 'Batter' : role === 'BOWLER' ? 'Bowler' : role === 'WICKET_KEEPER' ? 'Wicket-Keeper' : 'All-Rounder';
       const payload = {
         editionId,
         name: newFranchiseName.trim(),
         customFranchiseId: newFranchiseCustomId.trim() || undefined,
-        facultyCoordinator: newCoordinator.trim() || 'Assigned Faculty Coordinator',
-        facultyBranch: newCoordinatorBranch || 'General',
-        facultyMobile: newCoordinatorMobile.trim() || '',
-        department: newCoordinatorBranch || 'Engineering',
+        facultyCoordinator: newCoordinator.trim(),
+        facultyBranch: newCoordinatorBranch.trim(),
+        facultyMobile: newCoordinatorMobile.trim(),
+        department: newCoordinatorBranch.trim(),
         customPassword: newFranchiseCustomPassword.trim() || undefined,
         captainName: newCaptainName.trim(),
-        captainMobile: newCaptainMobile.trim() || '',
-        captainRole: newCaptainRole,
+        captainMobile: newCaptainMobile.trim(),
+        captainRoll: newCaptainRoll.trim(),
+        captainRole: playingRoleLabel(newCaptainRole),
         captainStats: {
           roll: newCaptainRoll.trim(),
-          matches: 15,
-          runs: 420,
-          wickets: 14,
+          matches: Number(newCaptainStats.matches) || 0,
+          runs: Number(newCaptainStats.runs) || 0,
+          highestScore: newCaptainStats.highestScore || '-',
+          battingAverage: newCaptainStats.battingAvg || '0.0',
+          strikeRate: newCaptainStats.strikeRate || '0.0',
+          wickets: Number(newCaptainStats.wickets) || 0,
+          economy: newCaptainStats.economy || '0.0',
+          bestBowling: newCaptainStats.bestBowling || '-',
         },
         viceCaptainName: newViceCaptainName.trim(),
-        viceCaptainMobile: newViceCaptainMobile.trim() || '',
-        viceCaptainRole: 'ALL_ROUNDER',
+        viceCaptainMobile: newViceCaptainMobile.trim(),
+        viceCaptainRoll: newViceCaptainRoll.trim(),
+        viceCaptainRole: playingRoleLabel(newViceCaptainRole),
         viceCaptainStats: {
           roll: newViceCaptainRoll.trim(),
-          matches: 14,
-          runs: 280,
-          wickets: 18,
+          matches: Number(newViceCaptainStats.matches) || 0,
+          runs: Number(newViceCaptainStats.runs) || 0,
+          highestScore: newViceCaptainStats.highestScore || '-',
+          battingAverage: newViceCaptainStats.battingAvg || '0.0',
+          strikeRate: newViceCaptainStats.strikeRate || '0.0',
+          wickets: Number(newViceCaptainStats.wickets) || 0,
+          economy: newViceCaptainStats.economy || '0.0',
+          bestBowling: newViceCaptainStats.bestBowling || '-',
         },
       };
 
@@ -482,7 +518,7 @@ export const AdminDashboard: React.FC = () => {
 
     setGateSubmitting(true);
     try {
-      const res = await login(adminGateUsername.trim(), adminGatePassword.trim(), 'SUPER_ADMIN');
+      const res = await login(adminGateUsername.trim(), adminGatePassword.trim(), 'ADMIN');
       if (!res.success) throw new Error(res.error || 'Login failed.');
       refreshState({ force: true });
       loadPlayers(true);
@@ -537,7 +573,7 @@ export const AdminDashboard: React.FC = () => {
                 type="password"
                 value={adminGatePassword}
                 onChange={(e) => setAdminGatePassword(e.target.value)}
-                placeholder="Admin Password"
+                placeholder="Password"
                 className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono"
                 required
               />

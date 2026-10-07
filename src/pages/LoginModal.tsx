@@ -233,7 +233,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                   type="password"
                   value={forgotNewPassword}
                   onChange={(e) => setForgotNewPassword(e.target.value)}
-                  placeholder="Min 4 characters"
+                  placeholder="Password"
                   className="w-full px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono text-sm focus:outline-none focus:border-amber-500 transition"
                   required
                 />
@@ -247,7 +247,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                   type="password"
                   value={forgotConfirmPassword}
                   onChange={(e) => setForgotConfirmPassword(e.target.value)}
-                  placeholder="Re-enter new password"
+                  placeholder="Password"
                   className="w-full px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono text-sm focus:outline-none focus:border-amber-500 transition"
                   required
                 />
@@ -389,7 +389,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                     type={showPassword ? 'text' : 'password'}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    placeholder="Enter password"
+                    placeholder="Password"
                     className="w-full px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white text-sm font-mono placeholder-slate-500 focus:outline-none focus:border-purple-500 transition pr-10"
                     required
                   />

@@ -398,6 +398,7 @@ export namespace RegistrationPipeline {
 
   /**
    * Requirement 3: Detained student logic included in bucket derivation.
+   * Derived academic year >= 4 (4th/5th/6th year, detained laterals, seniors) maps to PG.
    */
   export function deriveBucket(program: string, derivedYear: number, isDetained: boolean = false): string | null {
     const effective = deriveEffectiveBucket(program, derivedYear, isDetained);

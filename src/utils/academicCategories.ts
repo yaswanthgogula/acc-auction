@@ -146,10 +146,11 @@ export function deriveEffectiveBucket(
   } else if (progUpper === 'PG') {
     normalBucket = 'PG';
   } else {
+    // Year >= 4 (4th/5th/6th, detained laterals, seniors) must not occupy UG B1–B4 quotas.
     if (academicYear === 1) normalBucket = 'B1';
     else if (academicYear === 2) normalBucket = 'B2';
     else if (academicYear === 3) normalBucket = 'B3';
-    else if (academicYear >= 4) normalBucket = 'B4';
+    else if (academicYear >= 4) normalBucket = 'PG';
     else normalBucket = 'B1';
   }
 
@@ -172,7 +173,7 @@ export function deriveEffectiveBucket(
       if (effectiveYear === 1) effectiveBucket = 'B1';
       else if (effectiveYear === 2) effectiveBucket = 'B2';
       else if (effectiveYear === 3) effectiveBucket = 'B3';
-      else if (effectiveYear >= 4) effectiveBucket = 'B4';
+      else if (effectiveYear >= 4) effectiveBucket = 'PG';
       else effectiveBucket = 'B1';
       deductionExplanation = `Detained student deduction: Deduced to lower bucket by 1 (${formatAcademicCategory(normalBucket)} ➔ ${formatAcademicCategory(effectiveBucket)})`;
     }

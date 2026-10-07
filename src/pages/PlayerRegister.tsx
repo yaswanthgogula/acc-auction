@@ -653,7 +653,7 @@ export const PlayerRegister: React.FC<PlayerRegisterProps> = ({ onNavigate, onOp
                     type={showPassword ? 'text' : 'password'}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    placeholder="Min 4 characters"
+                    placeholder="Password"
                     className="w-full px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono text-sm placeholder-slate-600 focus:outline-none focus:border-blue-500 transition pr-10"
                     required
                   />
@@ -673,7 +673,7 @@ export const PlayerRegister: React.FC<PlayerRegisterProps> = ({ onNavigate, onOp
                   type={showPassword ? 'text' : 'password'}
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
-                  placeholder="Re-enter password"
+                  placeholder="Password"
                   className="w-full px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono text-sm placeholder-slate-600 focus:outline-none focus:border-blue-500 transition"
                   required
                 />

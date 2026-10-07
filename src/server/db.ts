@@ -743,7 +743,7 @@ export function deleteSingleFranchise(franchiseId: string, actorUsername: string
     execute('UPDATE players SET referring_franchise_id = NULL, is_referred = 0, referral_token = NULL, referral_status = "NONE" WHERE referring_franchise_id = ?', [franchiseId]);
     execute('DELETE FROM referral_tokens WHERE franchise_id = ?', [franchiseId]);
     execute('DELETE FROM referrals WHERE franchise_id = ?', [franchiseId]);
-    execute("UPDATE players SET registration_status = 'REGISTERED' WHERE id IN (SELECT player_id FROM squad_members WHERE franchise_id = ?)", [franchiseId]);
+    execute("UPDATE players SET registration_status = 'REGISTERED', is_auction_eligible = CASE WHEN approval_status = 'APPROVED' THEN 1 ELSE is_auction_eligible END WHERE id IN (SELECT player_id FROM squad_members WHERE franchise_id = ?)", [franchiseId]);
     execute('DELETE FROM bids WHERE franchise_id = ?', [franchiseId]);
     execute('DELETE FROM sales WHERE franchise_id = ?', [franchiseId]);
     execute('DELETE FROM squad_members WHERE franchise_id = ?', [franchiseId]);

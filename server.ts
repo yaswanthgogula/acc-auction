@@ -331,7 +331,15 @@ app.post('/api/auth/register-admin', async (req: Request, res: Response) => {
       });
     }
 
-    const targetRole = role === 'OPERATOR' ? 'OPERATOR' : 'SUPER_ADMIN';
+    const requestedRole = String(role || '').toUpperCase();
+    let targetRole: 'SUPER_ADMIN' | 'ADMIN' | 'OPERATOR' = 'ADMIN';
+    if (existingAdminCount === 0) {
+      targetRole = requestedRole === 'OPERATOR' ? 'OPERATOR' : 'SUPER_ADMIN';
+    } else if (requestedRole === 'OPERATOR') {
+      targetRole = 'OPERATOR';
+    } else {
+      targetRole = 'ADMIN';
+    }
     const passwordHash = await bcrypt.hash(password, 10);
     const id = `USR_ADMIN_${Date.now()}`;
     const now = Date.now();
@@ -419,7 +427,7 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
       return res.status(401).json({ success: false, error: 'Invalid credentials. Password incorrect.' });
     }
 
-    if (role === 'ADMIN') {
+    if (role === 'ADMIN' || role === 'SUPER_ADMIN' || role === 'OPERATOR') {
       if (user.role !== 'SUPER_ADMIN' && user.role !== 'OPERATOR' && user.role !== 'ADMIN') {
         return res.status(403).json({ success: false, error: 'Account does not have Administrator privileges.' });
       }
@@ -876,7 +884,8 @@ app.post('/api/admin/approve-player', (req: Request, res: Response) => {
     const player = queryOne('SELECT * FROM players WHERE id = ?', [playerId]);
     if (!player) return res.status(404).json({ success: false, error: 'Player not found.' });
 
-    const isApproved = status === 'APPROVED';
+    const normalizedStatus = status === 'REJECTED' ? 'REJECTED' : (status === 'APPROVED' ? 'APPROVED' : (status || 'APPROVED'));
+    const isApproved = normalizedStatus === 'APPROVED';
     const isAuctionEligible = isApproved && player.is_referred !== 1 ? 1 : 0;
     const now = Date.now();
     const assignedSession = session ? parseInt(session, 10) : (player.auction_session || 1);
@@ -891,9 +900,9 @@ app.post('/api/admin/approve-player', (req: Request, res: Response) => {
            updated_at = ?
        WHERE id = ?`,
       [
-        status || 'APPROVED',
+        normalizedStatus,
         isAuctionEligible,
-        status === 'REJECTED' ? rejectionReason || 'Profile does not meet tournament criteria' : null,
+        normalizedStatus === 'REJECTED' ? (rejectionReason || 'Profile does not meet tournament criteria') : null,
         basePrice !== undefined ? parseInt(basePrice, 10) : player.base_price,
         assignedSession,
         now,
@@ -908,7 +917,7 @@ app.post('/api/admin/approve-player', (req: Request, res: Response) => {
 
     res.json({
       success: true,
-      message: `Player '${player.name}' has been ${status}. Auction eligibility: ${isAuctionEligible ? 'ELIGIBLE' : 'INELIGIBLE'}.`,
+      message: `Player '${player.name}' has been ${normalizedStatus}. Auction eligibility: ${isAuctionEligible ? 'ELIGIBLE' : 'INELIGIBLE'}.`,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -1325,6 +1334,13 @@ app.delete('/api/players/:id', async (req: Request, res: Response) => {
 
 app.get('/api/auction/guest-draw-candidates', (req: Request, res: Response) => {
   try {
+    const actorRole = (req.headers['x-user-role'] as string) || (req.query?.role as string);
+    if (actorRole !== 'SUPER_ADMIN' && actorRole !== 'ADMIN' && actorRole !== 'OPERATOR') {
+      return res.status(403).json({
+        success: false,
+        error: 'PERMISSION_DENIED: Guest Draw Mode is restricted to authenticated administrators.',
+      });
+    }
     const edition = auctionManager.getActiveEdition();
     const editionId = (req.query.editionId as string) || (edition ? edition.id : 'ED_ACC_2026');
     const candidates = auctionManager.getEligibleGuestDrawPlayers(editionId);
@@ -1400,6 +1416,7 @@ app.post('/api/franchises', async (req: Request, res: Response) => {
       bestSeason,
       captainName,
       captainMobile,
+      captainRoll,
       captainRole,
       captainSkill,
       captainSpecialty,
@@ -1408,6 +1425,7 @@ app.post('/api/franchises', async (req: Request, res: Response) => {
       captainStats,
       viceCaptainName,
       viceCaptainMobile,
+      viceCaptainRoll,
       viceCaptainRole,
       viceCaptainSkill,
       viceCaptainSpecialty,
@@ -1421,6 +1439,18 @@ app.post('/api/franchises', async (req: Request, res: Response) => {
 
     if (!name || !name.trim()) {
       return res.status(400).json({ success: false, error: 'Franchise name required.' });
+    }
+    if (!facultyCoordinator || !String(facultyCoordinator).trim()) {
+      return res.status(400).json({ success: false, error: 'Coordinator Name is required.' });
+    }
+    if (!facultyMobile && !leaderMobile) {
+      return res.status(400).json({ success: false, error: 'Coordinator Mobile Number is required.' });
+    }
+    if (!captainName || !String(captainName).trim()) {
+      return res.status(400).json({ success: false, error: 'Captain Name is required.' });
+    }
+    if (!viceCaptainName || !String(viceCaptainName).trim()) {
+      return res.status(400).json({ success: false, error: 'Vice-Captain Name is required.' });
     }
 
     const currentFranchises = queryAll('SELECT id FROM franchises WHERE edition_id = ?', [effectiveEditionId]);
@@ -1438,9 +1468,12 @@ app.post('/api/franchises', async (req: Request, res: Response) => {
     const resolvedCaptainSpecialty = captainSpecialty || `${resolvedCaptainRole} Captain`;
     const resolvedViceCaptainRole = viceCaptainRole || viceCaptainSkill || 'All-Rounder';
     const resolvedViceCaptainSpecialty = viceCaptainSpecialty || `${resolvedViceCaptainRole} Vice-Captain`;
+    const resolvedCaptainRoll = (captainRoll || captainStats?.roll || '').toString().trim().toUpperCase() || null;
+    const resolvedViceCaptainRoll = (viceCaptainRoll || viceCaptainStats?.roll || '').toString().trim().toUpperCase() || null;
 
     const captainStatsObj = {
       ...(captainStats || {}),
+      roll: resolvedCaptainRoll || '',
       role: resolvedCaptainRole,
       specialty: resolvedCaptainSpecialty,
       battingStyle: captainBattingStyle || captainStats?.battingStyle || 'Right Hand Bat',
@@ -1451,6 +1484,7 @@ app.post('/api/franchises', async (req: Request, res: Response) => {
 
     const viceCaptainStatsObj = {
       ...(viceCaptainStats || {}),
+      roll: resolvedViceCaptainRoll || '',
       role: resolvedViceCaptainRole,
       specialty: resolvedViceCaptainSpecialty,
       battingStyle: viceCaptainBattingStyle || viceCaptainStats?.battingStyle || 'Right Hand Bat',
@@ -1498,12 +1532,12 @@ app.post('/api/franchises', async (req: Request, res: Response) => {
         `INSERT INTO franchises (
           id, edition_id, name, logo_url, faculty_coordinator, faculty_branch, faculty_mobile,
           department, leader_photo_url, leader_mobile,
-          captain_name, vice_captain_name,
+          captain_name, vice_captain_name, captain_roll, vice_captain_roll,
           captain_mobile, captain_skill, captain_specialty, captain_batting_style, captain_bowling_style, captain_stats_json,
           vice_captain_mobile, vice_captain_skill, vice_captain_specialty, vice_captain_batting_style, vice_captain_bowling_style, vice_captain_stats_json,
           matches_played, matches_won, matches_lost, titles_won, win_percentage, franchise_stats_json,
           purse, active, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           franchiseId,
           effectiveEditionId,
@@ -1517,6 +1551,8 @@ app.post('/api/franchises', async (req: Request, res: Response) => {
           resolvedFacultyMobile,
           captainName ? captainName.trim() : null,
           viceCaptainName ? viceCaptainName.trim() : null,
+          resolvedCaptainRoll,
+          resolvedViceCaptainRoll,
           captainMobile ? captainMobile.trim() : null,
           resolvedCaptainRole,
           resolvedCaptainSpecialty,
@@ -1575,6 +1611,8 @@ app.post('/api/franchises', async (req: Request, res: Response) => {
       leader_mobile: resolvedFacultyMobile,
       captain_name: captainName || null,
       vice_captain_name: viceCaptainName || null,
+      captain_roll: resolvedCaptainRoll,
+      vice_captain_roll: resolvedViceCaptainRoll,
       captain_mobile: captainMobile || null,
       captain_skill: resolvedCaptainRole,
       captain_specialty: resolvedCaptainSpecialty,
@@ -2342,6 +2380,13 @@ app.post('/api/auction/resume', async (req: Request, res: Response) => {
 
 app.get('/api/auction/guest-draw-candidates', (req: Request, res: Response) => {
   try {
+    const actorRole = (req.headers['x-user-role'] as string) || (req.query?.role as string);
+    if (actorRole !== 'SUPER_ADMIN' && actorRole !== 'ADMIN' && actorRole !== 'OPERATOR') {
+      return res.status(403).json({
+        success: false,
+        error: 'PERMISSION_DENIED: Guest Draw Mode is restricted to authenticated administrators.',
+      });
+    }
     const edition = auctionManager.getActiveEdition();
     const editionId = (req.query.editionId as string) || (edition ? edition.id : 'ED_ACC_2026');
     const candidates = auctionManager.getEligibleGuestDrawPlayers(editionId);
