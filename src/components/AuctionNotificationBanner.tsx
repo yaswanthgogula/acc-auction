@@ -1,49 +1,61 @@
 /**
  * ============================================================================
- * ACC LIVE AUCTION NOTIFICATION & CUSTOM TIMER ALERT BANNER
+ * ACC DISCORD-THEME TOAST NOTIFICATIONS (EXACT DISCORD UI)
  * ============================================================================
- * Implements Requirement 2:
- * - Shows custom timer alert ("Auction starts in MM:SS")
- * - If player is not using the app, sends desktop/mobile push notification
- * - Real-time notification for every bid: which player has been bid by which franchise and amount
- * - When custom timer alert stops, after 10 seconds directly starts auction automatically!
+ * - Compact Discord-style toast popups in the corner
+ * - Solid dark-gray background (bg-[#2b2d31]), rounded-lg, crisp text
+ * - Left-side colored accent border:
+ *     * Yellow (border-l-yellow-400) for Live Bids
+ *     * Red (border-l-rose-500) for Timer Alerts
+ *     * Blurple/Blue (border-l-indigo-400) for System Notices
+ *     * Emerald (border-l-emerald-400) for Sold Hammer
+ * - Stacks neatly in bottom-right corner
+ * - Smooth, fast slide-in / fade-in arrival (STRICTLY NO BOUNCY EFFECTS)
+ * - Zero Masking: never obstructs player dossiers, bids, or central timers
  */
 
 import React, { useState, useEffect } from 'react';
-import { useAuction } from '../context/AuctionContext';
-import { mobileNotification } from '../utils/mobileNotification';
-import { Bell, Clock, X, ChevronRight, Smartphone, Zap, TrendingUp, AlertCircle } from 'lucide-react';
+import { useAuction, ToastItem } from '../context/AuctionContext';
+import {
+  Gavel,
+  Clock,
+  X,
+  Volume2,
+  Megaphone,
+  Trophy,
+  UserX,
+  AlertCircle,
+  Radio,
+} from 'lucide-react';
 
 interface AuctionNotificationBannerProps {
   onNavigate?: (route: string) => void;
+  compact?: boolean;
 }
 
-export const AuctionNotificationBanner: React.FC<AuctionNotificationBannerProps> = ({ onNavigate }) => {
+export const AuctionNotificationBanner: React.FC<AuctionNotificationBannerProps> = ({
+  onNavigate,
+  compact = false,
+}) => {
   const {
-    activeNotification,
-    dismissNotification,
+    toasts,
+    dismissToast,
     customTimerAlert,
     cancelCustomTimerAlert,
-    liveBidNotification,
-    dismissLiveBidNotification,
   } = useAuction();
 
-  const [alertSecondsRemaining, setAlertSecondsRemaining] = useState<number | null>(null);
-  const [mobileAlertEnabled, setMobileAlertEnabled] = useState(
-    typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted'
-  );
+  const [timerSecondsRemaining, setTimerSecondsRemaining] = useState<number | null>(null);
 
-  // Custom Timer Alert Countdown Ticker (Requirement 2)
+  // Synchronized countdown for active custom timer alert
   useEffect(() => {
     if (!customTimerAlert || !customTimerAlert.active) {
-      setAlertSecondsRemaining(null);
+      setTimerSecondsRemaining(null);
       return;
     }
 
     const updateTimer = () => {
-      const now = Date.now();
-      const diff = Math.max(0, Math.ceil((customTimerAlert.startsAt - now) / 1000));
-      setAlertSecondsRemaining(diff);
+      const diff = Math.max(0, Math.ceil((customTimerAlert.startsAt - Date.now()) / 1000));
+      setTimerSecondsRemaining(diff);
     };
 
     updateTimer();
@@ -51,187 +63,144 @@ export const AuctionNotificationBanner: React.FC<AuctionNotificationBannerProps>
     return () => clearInterval(interval);
   }, [customTimerAlert]);
 
-  // Request browser notification permission
-  const handleEnableMobileAlerts = async () => {
-    const res = await mobileNotification.requestPermission();
-    if (res === 'granted') {
-      setMobileAlertEnabled(true);
-    }
-  };
-
   const formatCountdown = (totalSec: number) => {
     const mins = Math.floor(totalSec / 60);
     const secs = totalSec % 60;
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const isFinal10s = customTimerAlert?.phase === 'FINAL_10S' || (alertSecondsRemaining !== null && alertSecondsRemaining <= 10 && Boolean(customTimerAlert?.active));
+  const isFinal10s =
+    customTimerAlert?.phase === 'FINAL_10S' ||
+    (timerSecondsRemaining !== null && timerSecondsRemaining <= 10 && Boolean(customTimerAlert?.active));
+
+  const hasActiveTimerToast = toasts.some((t) => t.type === 'TIMER');
 
   return (
-    <div className="relative z-50 flex flex-col w-full shadow-2xl">
-      {/* 1. CUSTOM TIMER ALERT (Requirement 2) */}
-      {customTimerAlert && customTimerAlert.active && (
+    <div
+      aria-live="polite"
+      className="fixed bottom-5 right-5 z-[99999] pointer-events-none flex flex-col gap-2.5 max-w-sm w-[350px] sm:w-[380px] select-none"
+    >
+      {/* 1. Persistent Active Custom Timer Alert (if active countdown is ongoing) */}
+      {customTimerAlert && customTimerAlert.active && !hasActiveTimerToast && (
         <div
-          className={`w-full text-slate-950 px-4 py-3 border-b transition-all duration-300 ${
-            isFinal10s
-              ? 'bg-gradient-to-r from-red-500 via-amber-400 to-red-500 animate-pulse border-red-600 shadow-[0_0_30px_rgba(239,68,68,0.5)]'
-              : 'bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 border-amber-500'
-          }`}
+          className={`pointer-events-auto rounded-lg bg-[#2b2d31] text-[#dbdee1] border border-[#1e1f22] border-l-4 border-l-rose-500 shadow-2xl p-3 flex flex-col gap-1.5 transition-all duration-200 ease-out transform translate-x-0 opacity-100`}
         >
-          <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3 text-xs">
-            <div className="flex items-center gap-3 min-w-0">
-              <div
-                className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 shadow-lg ${
-                  isFinal10s ? 'bg-slate-950 text-red-400 animate-bounce' : 'bg-slate-950 text-amber-400'
-                }`}
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span className="p-1 rounded bg-rose-500/20 text-rose-400 shrink-0">
+                <Clock className="w-3.5 h-3.5 animate-pulse" />
+              </span>
+              <span className="font-mono text-[11px] font-bold text-rose-400 uppercase tracking-wider truncate">
+                {isFinal10s ? '🚨 FINAL 10 SECONDS' : '⏳ TIMER ALERT'}
+              </span>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <span className="px-1.5 py-0.5 rounded bg-[#1e1f22] text-rose-300 font-mono font-black text-xs border border-[#35373c]">
+                {isFinal10s
+                  ? `00:0${timerSecondsRemaining ?? 10}s`
+                  : formatCountdown(timerSecondsRemaining ?? 0)}
+              </span>
+              <button
+                type="button"
+                onClick={cancelCustomTimerAlert}
+                title="Dismiss Alert"
+                className="text-[#949ba4] hover:text-white p-1 rounded hover:bg-[#35373c] transition cursor-pointer"
               >
-                <Clock className="w-5 h-5 animate-spin" />
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+          <p className="text-xs text-[#dbdee1] font-sans leading-relaxed">
+            {isFinal10s
+              ? 'Auction commencing automatically! Get ready for live bidding.'
+              : customTimerAlert.message || 'Auction starts soon.'}
+          </p>
+        </div>
+      )}
+
+      {/* 2. Discord-style Toast Popups Stack */}
+      {toasts.map((toast) => {
+        let borderAccent = 'border-l-indigo-400';
+        let badgeBg = 'bg-indigo-500/20 text-indigo-400';
+        let IconComponent = Megaphone;
+        let channelTag = '#announcements';
+
+        if (toast.type === 'BID') {
+          borderAccent = 'border-l-yellow-400';
+          badgeBg = 'bg-yellow-400/20 text-yellow-300';
+          IconComponent = Gavel;
+          channelTag = '#live-bids';
+        } else if (toast.type === 'TIMER') {
+          borderAccent = 'border-l-rose-500';
+          badgeBg = 'bg-rose-500/20 text-rose-400';
+          IconComponent = Clock;
+          channelTag = '#timer-alerts';
+        } else if (toast.type === 'SALE') {
+          borderAccent = 'border-l-emerald-400';
+          badgeBg = 'bg-emerald-400/20 text-emerald-400';
+          IconComponent = Trophy;
+          channelTag = '#auction-sales';
+        } else if (toast.type === 'UNSOLD') {
+          borderAccent = 'border-l-slate-400';
+          badgeBg = 'bg-slate-700/50 text-slate-300';
+          IconComponent = UserX;
+          channelTag = '#unsold-pool';
+        }
+
+        return (
+          <div
+            key={toast.id}
+            role="alert"
+            className={`pointer-events-auto rounded-lg bg-[#2b2d31] text-[#dbdee1] border border-[#1e1f22] border-l-4 ${borderAccent} shadow-2xl shadow-black/80 p-3 flex flex-col gap-1.5 transition-all duration-200 ease-out transform translate-x-0 opacity-100 hover:bg-[#313338]`}
+          >
+            {/* Header: Channel tag / category & Close button */}
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <span className={`p-1 rounded ${badgeBg} shrink-0`}>
+                  <IconComponent className="w-3.5 h-3.5" />
+                </span>
+                <span className="font-mono text-[10px] font-bold text-[#949ba4] uppercase tracking-wider">
+                  {channelTag}
+                </span>
+                <span className="text-slate-600">•</span>
+                <span className="text-white text-xs font-bold truncate">
+                  {toast.title}
+                </span>
               </div>
 
-              <div className="flex flex-col min-w-0">
-                <div className="flex items-center gap-2">
-                  <span
-                    className={`px-2 py-0.5 rounded text-[10px] font-mono font-black uppercase tracking-wider ${
-                      isFinal10s ? 'bg-red-950 text-red-300' : 'bg-slate-950 text-amber-400'
-                    }`}
-                  >
-                    {isFinal10s ? '🚨 FINAL 10 SECONDS' : '⏳ AUCTION TIMER ALERT'}
-                  </span>
-                  <span className="font-heading font-black text-slate-950 uppercase tracking-tight text-sm">
-                    {isFinal10s ? 'AUCTION COMMENCING AUTOMATICALLY!' : customTimerAlert.message}
+              <button
+                type="button"
+                onClick={() => dismissToast(toast.id)}
+                title="Close"
+                className="text-[#949ba4] hover:text-white p-1 rounded hover:bg-[#35373c] transition cursor-pointer shrink-0"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            {/* Body: Crisp Discord-styled text */}
+            <div className="text-xs text-[#dbdee1] font-sans leading-relaxed">
+              {toast.type === 'BID' && toast.meta ? (
+                <div>
+                  <span className="font-semibold text-white">
+                    {toast.meta.playerName || 'Player'}
+                  </span>{' '}
+                  bid by{' '}
+                  <span className="font-bold text-yellow-400">
+                    {toast.meta.franchiseName || 'Franchise'}
+                  </span>{' '}
+                  for{' '}
+                  <span className="font-mono font-bold text-emerald-400">
+                    {toast.meta.amount} Pts (Purse)
                   </span>
                 </div>
-                <span className="text-slate-900 text-[11px] font-semibold mt-0.5">
-                  {isFinal10s
-                    ? 'When custom timer alert stops, after 10 seconds auction starts directly!'
-                    : 'Scheduled auction commencement alert for all players and audience.'}
-                </span>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-3 shrink-0 ml-auto">
-              <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-slate-950 text-amber-300 font-mono font-black text-sm shadow-inner border border-slate-800">
-                <Clock className="w-4 h-4 text-amber-400 animate-spin" />
-                <span>
-                  {isFinal10s ? `STARTS IN: 00:0${alertSecondsRemaining ?? 10}s` : `STARTS IN: ${formatCountdown(alertSecondsRemaining ?? 0)}`}
-                </span>
-              </div>
-
-              {!mobileAlertEnabled && mobileNotification.isSupported() && (
-                <button
-                  onClick={handleEnableMobileAlerts}
-                  className="px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-950 text-white font-bold text-[11px] flex items-center gap-1.5 transition shadow cursor-pointer border border-slate-800"
-                  title="Receive timer alert on your mobile device even if app is minimized"
-                >
-                  <Smartphone className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Get Mobile Notification</span>
-                </button>
+              ) : (
+                <p>{toast.message}</p>
               )}
-
-              {onNavigate && (
-                <button
-                  onClick={() => onNavigate('/live')}
-                  className="px-3 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-900 text-amber-400 font-bold text-xs flex items-center gap-1 transition shadow cursor-pointer"
-                >
-                  <span>Enter Floor</span>
-                  <ChevronRight className="w-3.5 h-3.5" />
-                </button>
-              )}
-
-              <button
-                onClick={cancelCustomTimerAlert}
-                className="p-1.5 rounded-lg text-slate-950 hover:bg-slate-950/20 transition cursor-pointer"
-                title="Dismiss or cancel timer alert"
-              >
-                <X className="w-4 h-4" />
-              </button>
             </div>
           </div>
-        </div>
-      )}
-
-      {/* 2. REAL-TIME LIVE BID BROADCAST NOTIFICATION (Requirement 2) */}
-      {liveBidNotification && (
-        <div className="w-full bg-gradient-to-r from-blue-900 via-indigo-950 to-blue-900 text-white px-4 py-2 border-b border-cyan-500/40 shadow-xl">
-          <div className="max-w-7xl mx-auto flex items-center justify-between gap-3 text-xs">
-            <div className="flex items-center gap-3 min-w-0">
-              <div className="w-7 h-7 rounded-lg bg-blue-600 text-white flex items-center justify-center shrink-0 shadow animate-pulse">
-                <TrendingUp className="w-4 h-4" />
-              </div>
-              <div className="flex flex-wrap items-center gap-2 min-w-0">
-                <span className="px-2 py-0.5 rounded bg-blue-950 text-cyan-300 font-mono font-bold text-[10px] border border-blue-700">
-                  🏏 LIVE BID ALERT
-                </span>
-                <span className="font-bold text-white text-xs">
-                  <span className="text-amber-300 font-black">{liveBidNotification.playerName}</span> has been bid by{' '}
-                  <span className="text-cyan-300 font-black">{liveBidNotification.franchiseName}</span> for{' '}
-                  <span className="text-yellow-400 font-black font-mono">₹{liveBidNotification.amount} Lakhs</span>!
-                </span>
-              </div>
-            </div>
-
-            <button
-              onClick={dismissLiveBidNotification}
-              className="p-1 rounded text-slate-400 hover:text-white transition cursor-pointer"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* 3. STANDARD SYSTEM NOTIFICATION BANNER */}
-      {activeNotification && !customTimerAlert && (
-        <div className="relative z-40 bg-gradient-to-r from-amber-500 via-amber-400 to-amber-500 text-slate-950 px-4 py-2.5 shadow-2xl border-b border-amber-600/40">
-          <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3 text-xs">
-            <div className="flex items-center gap-2.5 min-w-0">
-              <div className="w-8 h-8 rounded-lg bg-slate-950 text-amber-400 flex items-center justify-center shrink-0 shadow">
-                <Bell className="w-4 h-4 animate-bounce" />
-              </div>
-              <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-2 min-w-0">
-                <span className="px-2 py-0.5 rounded bg-slate-950 text-amber-400 text-[10px] font-mono font-black uppercase tracking-wider shrink-0 w-fit">
-                  LIVE BROADCAST
-                </span>
-                <span className="font-black text-slate-950 tracking-tight text-sm truncate">
-                  {activeNotification.title}
-                </span>
-                <span className="hidden md:inline text-slate-800 text-xs truncate max-w-xl">
-                  — {activeNotification.message}
-                </span>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-3 shrink-0 ml-auto">
-              {!mobileAlertEnabled && mobileNotification.isSupported() && (
-                <button
-                  onClick={handleEnableMobileAlerts}
-                  className="px-2.5 py-1.5 rounded-lg bg-slate-900/80 hover:bg-slate-950 text-slate-100 font-bold text-[11px] flex items-center gap-1 transition shadow cursor-pointer border border-slate-800"
-                >
-                  <Smartphone className="w-3.5 h-3.5 text-amber-400" />
-                  <span className="hidden sm:inline">Enable Mobile Alerts</span>
-                </button>
-              )}
-
-              {onNavigate && (
-                <button
-                  onClick={() => onNavigate('/live')}
-                  className="px-3.5 py-1.5 rounded-lg bg-slate-950 hover:bg-slate-900 text-amber-400 font-bold text-xs flex items-center gap-1 transition shadow cursor-pointer"
-                >
-                  <span>Go to Floor</span>
-                  <ChevronRight className="w-3.5 h-3.5" />
-                </button>
-              )}
-
-              <button
-                onClick={dismissNotification}
-                className="p-1 rounded-md text-slate-900 hover:bg-slate-950/20 transition cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+        );
+      })}
     </div>
   );
 };

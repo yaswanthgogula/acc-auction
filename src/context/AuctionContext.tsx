@@ -63,6 +63,24 @@ export interface AuctionNotification {
   createdAt: number;
 }
 
+export interface ToastItem {
+  id: string;
+  type: 'BID' | 'TIMER' | 'SYSTEM' | 'SALE' | 'UNSOLD';
+  title: string;
+  message: string;
+  timestamp: number;
+  meta?: {
+    playerName?: string;
+    franchiseName?: string;
+    amount?: number;
+    phase?: string;
+  };
+}
+
+export interface InboxNotification extends ToastItem {
+  read: boolean;
+}
+
 export interface PlayerStatsSummary {
   total: number;
   approved: number;
@@ -91,6 +109,15 @@ interface AuctionContextType {
   soundEnabled: boolean;
   lastSaleEvent: AuctionSaleRecord | null;
   activeNotification: AuctionNotification | null;
+
+  // Universal Inbox & Discord Toasts
+  toasts: ToastItem[];
+  dismissToast: (id: string) => void;
+  notificationHistory: InboxNotification[];
+  unreadNotificationCount: number;
+  markAllNotificationsAsRead: () => void;
+  clearNotificationHistory: () => void;
+  pushToast: (item: Omit<ToastItem, 'id' | 'timestamp'>) => void;
 
   // Custom Timer Alert (Requirement 2)
   customTimerAlert: {
@@ -139,6 +166,17 @@ interface AuctionContextType {
   fetchPlayers: (options?: { force?: boolean; editionId?: string }) => Promise<any[]>;
   getPlayerById: (idOrRoll: string) => any | null;
   getPlayersByBucket: (bucket: string) => any[];
+
+  // Draw Mode & Auto-Transition (Requirement 6)
+  autoDrawMode: boolean;
+  currentDrawMode: 'AUTO' | 'GUEST';
+  setDrawMode: (mode: 'AUTO' | 'GUEST') => Promise<{ success: boolean; error?: string }>;
+
+  // Unsold Players Management (Requirement 3)
+  unsoldPlayers: any[];
+  loadingUnsoldPlayers: boolean;
+  fetchUnsoldPlayers: () => Promise<any[]>;
+  reAdmitUnsoldPlayer: (playerId: string) => Promise<{ success: boolean; message?: string; error?: string }>;
 
   dismissNotification: () => void;
   sendAuctionNotification: (params?: { startsInMinutes?: number; title?: string; message?: string; target?: string }) => Promise<{ success: boolean; notification?: any; error?: string }>;
@@ -202,6 +240,80 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
     timestamp: number;
   } | null>(null);
 
+  // Universal Inbox & Discord Toast Notifications
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const [notificationHistory, setNotificationHistory] = useState<InboxNotification[]>(() => {
+    try {
+      const saved = localStorage.getItem('acc_notification_inbox');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return [
+      {
+        id: 'init_welcome',
+        type: 'SYSTEM',
+        title: 'ACC Auction Broadcast Channel',
+        message: 'Welcome to Avanthi Cricket Carnival 2026. Live bid alerts, timer events, and official announcements will appear here.',
+        timestamp: Date.now(),
+        read: true,
+      },
+    ];
+  });
+
+  const pushToast = useCallback((item: Omit<ToastItem, 'id' | 'timestamp'>) => {
+    const id = `toast_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const newItem: ToastItem = {
+      ...item,
+      id,
+      timestamp: Date.now(),
+    };
+
+    // Keep up to 4 toasts in the corner stack at once
+    setToasts((prev) => [newItem, ...prev.slice(0, 3)]);
+
+    // Record into universal inbox history
+    const inboxItem: InboxNotification = {
+      ...newItem,
+      read: false,
+    };
+    setNotificationHistory((prev) => {
+      const updated = [inboxItem, ...prev.slice(0, 99)];
+      try {
+        localStorage.setItem('acc_notification_inbox', JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+
+    // Clean auto-dismiss after 5.5s
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 5500);
+  }, []);
+
+  const dismissToast = useCallback((id: string) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+
+  const markAllNotificationsAsRead = useCallback(() => {
+    setNotificationHistory((prev) => {
+      const updated = prev.map((n) => ({ ...n, read: true }));
+      try {
+        localStorage.setItem('acc_notification_inbox', JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+  }, []);
+
+  const clearNotificationHistory = useCallback(() => {
+    setNotificationHistory([]);
+    try {
+      localStorage.removeItem('acc_notification_inbox');
+    } catch {}
+  }, []);
+
+  const unreadNotificationCount = useMemo(() => {
+    return notificationHistory.filter((n) => !n.read).length;
+  }, [notificationHistory]);
+
   // Requirements 6 & 11 States
   const [activeSession, setActiveSession] = useState<1 | 2>(1);
   const [sessionState, setSessionState] = useState<string>('SESSION_1_ACTIVE');
@@ -209,6 +321,14 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [autoTransitionDeadline, setAutoTransitionDeadline] = useState<number | null>(null);
   const [isPaused, setIsPaused] = useState<boolean>(false);
   const [pausedRemainingMs, setPausedRemainingMs] = useState<number | null>(null);
+
+  // Draw Mode & Auto-Transition (Requirement 6)
+  const [autoDrawMode, setAutoDrawMode] = useState<boolean>(true);
+  const [currentDrawMode, setCurrentDrawMode] = useState<'AUTO' | 'GUEST'>('AUTO');
+
+  // Unsold Players Management (Requirement 3)
+  const [unsoldPlayers, setUnsoldPlayers] = useState<any[]>([]);
+  const [loadingUnsoldPlayers, setLoadingUnsoldPlayers] = useState<boolean>(false);
 
   const [players, setPlayers] = useState<any[]>([]);
   const [loadingPlayers, setLoadingPlayers] = useState<boolean>(false);
@@ -285,6 +405,8 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
           if (data.sessionState) setSessionState(data.sessionState);
           if (data.isPaused !== undefined) setIsPaused(Boolean(data.isPaused));
           if (data.pausedRemainingMs !== undefined) setPausedRemainingMs(data.pausedRemainingMs);
+          if (data.autoDrawMode !== undefined) setAutoDrawMode(Boolean(data.autoDrawMode));
+          if (data.currentDrawMode !== undefined) setCurrentDrawMode(data.currentDrawMode);
         }
       } catch {
         // Ignored
@@ -342,19 +464,28 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
           setRecentBids((prev) => [payload.bid, ...prev.slice(0, 19)]);
         }
 
-        // Requirement 2: Real-time live bid notification to everyone using the app
         const notifData = payload.bidNotification || (payload.bid && payload.lot ? {
           playerName: payload.lot.player_name,
           franchiseName: payload.lot.highest_bidder_name || 'Franchise',
           amount: payload.bid.amount,
-          message: `🏏 BID ALERT: ${payload.lot.player_name} bid by ${payload.lot.highest_bidder_name || 'Franchise'} for ₹${payload.bid.amount} Lakhs!`,
+          message: `🏏 BID ALERT: ${payload.lot.player_name} bid by ${payload.lot.highest_bidder_name || 'Franchise'} for ${payload.bid.amount} Pts (Purse)!`,
           timestamp: payload.bid.timestamp || Date.now(),
         } : null);
 
         if (notifData) {
           setLiveBidNotification(notifData);
+          pushToast({
+            type: 'BID',
+            title: 'Live Bid Alert',
+            message: `${notifData.playerName} bid by ${notifData.franchiseName} for ${notifData.amount} Pts (Purse)`,
+            meta: {
+              playerName: notifData.playerName,
+              franchiseName: notifData.franchiseName,
+              amount: notifData.amount,
+            },
+          });
           mobileNotification.sendNotification(
-            `🏏 ACC Live Bid: ₹${notifData.amount}L`,
+            `🏏 ACC Live Bid: ${notifData.amount} Pts`,
             notifData.message
           );
         }
@@ -369,6 +500,11 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
         if (payload.customTimerAlert) {
           setCustomTimerAlert(payload.customTimerAlert);
           auctionSound.playBidChime();
+          pushToast({
+            type: 'TIMER',
+            title: 'Auction Starts Soon',
+            message: payload.customTimerAlert.message || 'Auction countdown alert started.',
+          });
           mobileNotification.sendNotification(
             '⏳ ACC Auction Starts Soon!',
             payload.customTimerAlert.message || 'Auction countdown alert started. Return to app now!'
@@ -383,6 +519,11 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
         if (payload.customTimerAlert) {
           setCustomTimerAlert(payload.customTimerAlert);
           auctionSound.playBidChime();
+          pushToast({
+            type: 'TIMER',
+            title: '🚨 Final 10 Seconds!',
+            message: 'Auction starts directly in 10 seconds! Get ready for live bidding.',
+          });
           mobileNotification.sendNotification(
             '🚨 Final 10 Seconds!',
             'Auction starts directly in 10 seconds! Get ready for live bidding.'
@@ -425,6 +566,16 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
         } else {
           setCurrentLot((prev: any) => (prev ? { ...prev, lot_state: 'SOLD', deadline_ms: null } : null));
         }
+        pushToast({
+          type: 'SALE',
+          title: `Player Sold: ${payload.playerName || 'Lot'}`,
+          message: `Acquired by ${payload.franchiseName || 'Franchise'} for ${payload.finalPrice || 0} Pts (Purse)`,
+          meta: {
+            playerName: payload.playerName,
+            franchiseName: payload.franchiseName,
+            amount: payload.finalPrice,
+          },
+        });
       } catch {}
       auctionSound.playSoldCelebration();
       refreshState({ force: true });
@@ -438,12 +589,16 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
           setServerTime(clockSync.getNow());
         }
         setCurrentLot((prev: any) => (prev ? { ...prev, lot_state: 'UNSOLD', deadline_ms: null } : null));
+        pushToast({
+          type: 'UNSOLD',
+          title: `Player Unsold: ${payload.playerName || 'Player'}`,
+          message: `${payload.playerName || 'Player'} moved to Unsold Pool. Admin approval required to re-admit.`,
+        });
       } catch {}
       auctionSound.playGavelStrike();
       refreshState({ force: true });
     });
 
-    // Requirement 6: Automatic 10-Second Transition Event Listener
     eventSource.addEventListener('AUTO_TRANSITION_COUNTDOWN', (e) => {
       try {
         const payload = JSON.parse(e.data);
@@ -457,7 +612,6 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
       setAutoTransitionDeadline(null);
     });
 
-    // Requirement 11: Session state listener
     eventSource.addEventListener('SESSION_STATE_CHANGED', (e) => {
       try {
         const payload = JSON.parse(e.data);
@@ -532,6 +686,11 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
       try {
         const payload = JSON.parse(e.data);
         setActiveNotification(payload);
+        pushToast({
+          type: 'SYSTEM',
+          title: payload.title || 'Official Announcement',
+          message: payload.message || '',
+        });
         auctionSound.playBidChime();
       } catch {}
     });
@@ -552,6 +711,53 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
         setPausedRemainingMs(null);
         if (payload.lot) setCurrentLot(payload.lot);
       } catch {}
+    });
+
+    eventSource.addEventListener('AUTO_DRAW_MODE_CHANGED', (e) => {
+      try {
+        const payload = JSON.parse(e.data);
+        if (payload.autoDrawMode !== undefined) setAutoDrawMode(Boolean(payload.autoDrawMode));
+        if (payload.currentDrawMode) setCurrentDrawMode(payload.currentDrawMode);
+        if (!payload.autoDrawMode) {
+          setAutoTransitionCountdown(null);
+          setAutoTransitionDeadline(null);
+        }
+      } catch {}
+    });
+
+    eventSource.addEventListener('PLAYER_READMITTED', () => {
+      fetchUnsoldPlayers();
+      fetchPlayers({ force: true });
+      refreshState({ force: true });
+    });
+
+    eventSource.addEventListener('PLAYER_PASSED', (e: MessageEvent) => {
+      try {
+        auctionSound.playClick();
+        if (e.data) {
+          const payload = JSON.parse(e.data);
+          if (payload?.lotId && payload?.franchiseId) {
+            setCurrentLot((prev: any) => {
+              if (!prev || prev.id !== payload.lotId) return prev;
+              const prevPassed = Array.isArray(prev.passed_franchises) ? prev.passed_franchises : [];
+              if (!prevPassed.includes(payload.franchiseId)) {
+                return {
+                  ...prev,
+                  passed_franchises: [...prevPassed, payload.franchiseId],
+                  passedCount: payload.passedCount ?? (prevPassed.length + 1),
+                };
+              }
+              return prev;
+            });
+            pushToast({
+              type: 'SYSTEM',
+              title: `${payload.franchiseName || 'Franchise'} Passed`,
+              message: `${payload.franchiseName || 'Franchise'} passed on ${payload.playerName || 'current lot'} (${payload.passedCount || 1}/${payload.totalTeams || 11} franchises passed)`,
+            });
+          }
+        }
+      } catch {}
+      refreshState({ force: true });
     });
 
     return () => {
@@ -638,7 +844,6 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
     return buckets;
   }, [players]);
 
-  // Requirement 8: Only APPROVED players can enter the auction pool
   const auctionEligiblePlayers = useMemo(() => {
     return players.filter(
       (p) =>
@@ -703,7 +908,6 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
     [players, playersByBucket]
   );
 
-  // Requirement 11: Set Auction Session (Start/End Session 1 or 2)
   const setAuctionSession = useCallback(
     async (session: 1 | 2, action: 'START' | 'END') => {
       try {
@@ -727,7 +931,6 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
     [editionId, refreshState]
   );
 
-  // Requirement 11: Assign players to Session 1 or Session 2 manually
   const assignPlayersToSession = useCallback(
     async (playerIds: string[], session: 1 | 2) => {
       try {
@@ -750,7 +953,6 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
     [fetchPlayers, refreshState]
   );
 
-  // Requirement 8: Approve or Reject player before auction eligibility
   const approvePlayer = useCallback(
     async (playerId: string, status: 'APPROVED' | 'REJECTED', reason?: string, basePrice?: number, session?: 1 | 2) => {
       try {
@@ -773,7 +975,6 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
     [fetchPlayers, refreshState]
   );
 
-  // Requirement 7: Player edit profile
   const updatePlayerProfile = useCallback(
     async (playerId: string, updateData: any) => {
       try {
@@ -865,13 +1066,28 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const passLot = useCallback(
     async (franchiseId: string) => {
       try {
+        const targetEd = editionId || 'ED_ACC_2026';
         const res = await fetch('/api/auction/pass', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ franchiseId, editionId }),
+          body: JSON.stringify({ franchiseId, editionId: targetEd }),
         });
         const data = await res.json();
-        return { success: data.success, error: data.error };
+        if (data.success && data.lotId) {
+          setCurrentLot((prev: any) => {
+            if (!prev || prev.id !== data.lotId) return prev;
+            const prevPassed = Array.isArray(prev.passed_franchises) ? prev.passed_franchises : [];
+            if (!prevPassed.includes(franchiseId)) {
+              return {
+                ...prev,
+                passed_franchises: [...prevPassed, franchiseId],
+                passedCount: data.passedCount ?? (prevPassed.length + 1),
+              };
+            }
+            return prev;
+          });
+        }
+        return { success: Boolean(data.success), error: data.error };
       } catch (err: any) {
         return { success: false, error: err.message };
       }
@@ -912,10 +1128,33 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const drawNextPlayer = useCallback(
     async (mode: 'AUTO' | 'GUEST' = 'AUTO', identifierOrId?: string) => {
       try {
+        const savedUserStr = localStorage.getItem('acc_auth_user');
+        let currentUser: any = null;
+        try {
+          if (savedUserStr) currentUser = JSON.parse(savedUserStr);
+        } catch {}
+
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (currentUser) {
+          headers['x-user-role'] = currentUser.role || '';
+          headers['x-user-id'] = currentUser.id || '';
+          headers['x-user-username'] = currentUser.username || '';
+        }
+
+        // When in GUEST mode, disable automatic auction functionality:
+        // Guests only select a single player to send to the bidding floor.
         const res = await fetch('/api/auction/draw-next', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ editionId, mode, playerId: identifierOrId, identifier: identifierOrId }),
+          headers,
+          body: JSON.stringify({
+            editionId,
+            mode,
+            autoRun: mode === 'AUTO',
+            playerId: identifierOrId,
+            identifier: identifierOrId,
+            actor: currentUser?.username || (mode === 'GUEST' ? 'Guest' : 'Admin'),
+            role: currentUser?.role || (mode === 'GUEST' ? 'GUEST' : 'SUPER_ADMIN'),
+          }),
         });
         const data = await res.json();
         if (data.success && data.lot) {
@@ -956,6 +1195,100 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
     },
     [editionId, refreshState]
   );
+
+  const fetchUnsoldPlayers = useCallback(async (): Promise<any[]> => {
+    setLoadingUnsoldPlayers(true);
+    try {
+      const res = await fetch(`/api/auction/unsold-players?editionId=${encodeURIComponent(editionId || 'ED_ACC_2026')}`);
+      const data = await res.json();
+      if (data.success && Array.isArray(data.players)) {
+        setUnsoldPlayers(data.players);
+        return data.players;
+      }
+      return [];
+    } catch {
+      return [];
+    } finally {
+      setLoadingUnsoldPlayers(false);
+    }
+  }, [editionId]);
+
+  const reAdmitUnsoldPlayer = useCallback(
+    async (playerId: string) => {
+      try {
+        const savedUserStr = localStorage.getItem('acc_auth_user');
+        let currentUser: any = null;
+        try {
+          if (savedUserStr) currentUser = JSON.parse(savedUserStr);
+        } catch {}
+
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (currentUser) {
+          headers['x-user-role'] = currentUser.role || 'SUPER_ADMIN';
+          headers['x-user-id'] = currentUser.id || '';
+        }
+
+        const res = await fetch('/api/auction/re-admit-unsold', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            playerId,
+            editionId,
+            actor: currentUser?.username || 'SuperAdmin',
+          }),
+        });
+        const data = await res.json();
+        if (data.success) {
+          await fetchUnsoldPlayers();
+          await fetchPlayers({ force: true });
+          refreshState({ force: true });
+        }
+        return { success: data.success, message: data.message, error: data.error };
+      } catch (err: any) {
+        return { success: false, error: err.message };
+      }
+    },
+    [editionId, fetchUnsoldPlayers, fetchPlayers, refreshState]
+  );
+
+  const setDrawMode = useCallback(
+    async (mode: 'AUTO' | 'GUEST') => {
+      try {
+        const savedUserStr = localStorage.getItem('acc_auth_user');
+        let currentUser: any = null;
+        try {
+          if (savedUserStr) currentUser = JSON.parse(savedUserStr);
+        } catch {}
+
+        const res = await fetch('/api/auction/set-draw-mode', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode,
+            editionId,
+            actor: currentUser?.username || 'Admin',
+          }),
+        });
+        const data = await res.json();
+        if (data.success) {
+          setAutoDrawMode(mode === 'AUTO');
+          setCurrentDrawMode(mode);
+          if (mode === 'GUEST') {
+            setAutoTransitionCountdown(null);
+            setAutoTransitionDeadline(null);
+          }
+        }
+        return { success: data.success, error: data.error };
+      } catch (err: any) {
+        return { success: false, error: err.message };
+      }
+    },
+    [editionId]
+  );
+
+  useEffect(() => {
+    fetchUnsoldPlayers();
+  }, [fetchUnsoldPlayers]);
 
   const undoSale = useCallback(
     async (saleId: string, reason: string) => {
@@ -1186,6 +1519,14 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
       customTimerAlert,
       liveBidNotification,
 
+      toasts,
+      dismissToast,
+      notificationHistory,
+      unreadNotificationCount,
+      markAllNotificationsAsRead,
+      clearNotificationHistory,
+      pushToast,
+
       activeSession,
       sessionState,
       autoTransitionCountdown,
@@ -1199,6 +1540,14 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
       assignPlayersToSession,
       approvePlayer,
       updatePlayerProfile,
+
+      autoDrawMode,
+      currentDrawMode,
+      setDrawMode,
+      unsoldPlayers,
+      loadingUnsoldPlayers,
+      fetchUnsoldPlayers,
+      reAdmitUnsoldPlayer,
 
       players,
       loadingPlayers,
@@ -1249,6 +1598,13 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
       activeNotification,
       customTimerAlert,
       liveBidNotification,
+      toasts,
+      dismissToast,
+      notificationHistory,
+      unreadNotificationCount,
+      markAllNotificationsAsRead,
+      clearNotificationHistory,
+      pushToast,
       activeSession,
       sessionState,
       autoTransitionCountdown,
@@ -1262,6 +1618,13 @@ export const AuctionProvider: React.FC<{ children: React.ReactNode }> = ({ child
       assignPlayersToSession,
       approvePlayer,
       updatePlayerProfile,
+      autoDrawMode,
+      currentDrawMode,
+      setDrawMode,
+      unsoldPlayers,
+      loadingUnsoldPlayers,
+      fetchUnsoldPlayers,
+      reAdmitUnsoldPlayer,
       players,
       loadingPlayers,
       playersError,

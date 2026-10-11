@@ -9,7 +9,7 @@ import { useAuction } from '../context/AuctionContext';
 import { useAuth } from '../context/AuthContext';
 import { CountdownTimer } from '../components/CountdownTimer';
 import { GuestDrawModal } from '../components/GuestDrawModal';
-import { formatAcademicCategory } from '../utils/academicCategories';
+import { formatAcademicCategory, isDiplomaPlayer } from '../utils/academicCategories';
 import {
   Gavel,
   Radio,
@@ -22,6 +22,7 @@ import {
   Sparkles,
   Clock,
   Activity,
+  Lock,
 } from 'lucide-react';
 
 export interface LiveAuctionProps {
@@ -122,9 +123,10 @@ export const LiveAuction: React.FC<LiveAuctionProps> = ({
           <button
             onClick={() => onNavigate('/projector')}
             className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-sky-300 border border-slate-700 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shadow"
+            title="Auditorium Mega Projector View"
           >
             <Maximize2 className="w-4 h-4 text-sky-400" />
-            Projector Screen
+            <span>Projector Screen</span>
           </button>
         </div>
       </div>
@@ -219,6 +221,12 @@ export const LiveAuction: React.FC<LiveAuctionProps> = ({
                       <span className="px-2.5 py-0.5 rounded-lg text-xs font-bold bg-blue-600/30 text-cyan-300 border border-blue-500/40">
                         {currentLot.player_type || 'All-Rounder'}
                       </span>
+                      {isDiplomaPlayer(currentLot) && (
+                        <span className="px-2.5 py-0.5 rounded-lg text-xs font-bold bg-rose-950 text-rose-300 border border-rose-500/80 inline-flex items-center gap-1 shadow">
+                          <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
+                          <span>Player detained by 1 year diploma</span>
+                        </span>
+                      )}
                       {currentLot.batting_style && (
                         <span className="px-2.5 py-0.5 rounded-lg bg-slate-950 text-slate-300 border border-slate-800 text-xs font-mono">
                           {currentLot.batting_style}
@@ -227,11 +235,18 @@ export const LiveAuction: React.FC<LiveAuctionProps> = ({
                     </div>
                   </div>
 
+                  {isDiplomaPlayer(currentLot) && (
+                    <div className="p-2.5 rounded-xl bg-gradient-to-r from-rose-950 via-red-900 to-rose-950 border border-rose-500/80 text-rose-200 text-xs font-bold font-mono uppercase flex items-center justify-center gap-2 shadow-lg animate-pulse">
+                      <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                      <span>Player detained by 1 year diploma</span>
+                    </div>
+                  )}
+
                   <div className="grid grid-cols-2 gap-3 p-4 rounded-2xl bg-slate-950/80 border border-slate-800 mt-2">
                     <div>
-                      <div className="text-[10px] uppercase font-bold text-slate-400">Opening Base</div>
+                      <div className="text-[10px] uppercase font-bold text-slate-400">Opening Base Price</div>
                       <div className="font-mono text-xl font-bold text-slate-200">
-                        {currentLot.opening_price} Pts (₹)
+                        {currentLot.opening_price} Pts (Purse)
                       </div>
                     </div>
 
@@ -240,7 +255,7 @@ export const LiveAuction: React.FC<LiveAuctionProps> = ({
                         <TrendingUp className="w-3 h-3" /> Current Bid
                       </div>
                       <div className="font-display text-3xl font-black text-amber-400">
-                        {currentLot.current_price} Pts (₹)
+                        {currentLot.current_price} Pts (Purse)
                       </div>
                     </div>
                   </div>
@@ -350,7 +365,7 @@ export const LiveAuction: React.FC<LiveAuctionProps> = ({
                   <div>
                     <div className="text-xs font-bold text-white">{myFranchise.name} Console</div>
                     <div className="text-[11px] text-amber-400 font-mono">
-                      Purse: {myFranchise.purse} Pts (₹) • Max Bid: {myFranchise.maxBid || 0} Pts
+                      Purse: {myFranchise.purse} Pts • Max Bid: {myFranchise.maxBid || 0} Pts
                     </div>
                   </div>
                 </div>
@@ -367,7 +382,7 @@ export const LiveAuction: React.FC<LiveAuctionProps> = ({
                     onClick={handleFranchiseBid}
                     className="flex-1 sm:flex-none px-6 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-xs font-black uppercase tracking-wider transition cursor-pointer shadow-lg shadow-emerald-950/50"
                   >
-                    {currentLot.highest_bidder_id === myFranchise.id ? 'You are Leading' : `Bid ${nextLegalBid} Pts (₹)`}
+                    {currentLot.highest_bidder_id === myFranchise.id ? 'You are Leading' : `Bid ${nextLegalBid} Pts`}
                   </button>
                 </div>
               </div>
@@ -405,7 +420,7 @@ export const LiveAuction: React.FC<LiveAuctionProps> = ({
                     <span className="w-2 h-2 rounded-full bg-emerald-400" />
                     <span className="font-bold text-white font-sans">{b.franchise_name || b.franchiseName}</span>
                   </div>
-                  <div className="text-amber-400 font-bold">{b.amount} Pts (₹)</div>
+                  <div className="text-amber-400 font-bold">{b.amount} Pts</div>
                 </div>
               ))}
               {recentBids.length === 0 && (
@@ -439,7 +454,7 @@ export const LiveAuction: React.FC<LiveAuctionProps> = ({
                   >
                     <div className="flex items-center justify-between mb-1">
                       <div className="font-bold text-white truncate max-w-[160px]">{f.name}</div>
-                      <div className="font-mono font-black text-amber-400">{f.purse} Pts (₹)</div>
+                      <div className="font-mono font-black text-amber-400">{f.purse} Pts</div>
                     </div>
                     <div className="flex items-center justify-between text-[10px] text-slate-400">
                       <span>Squad: {f.squadCount || 0}/22</span>

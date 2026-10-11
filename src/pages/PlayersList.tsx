@@ -15,9 +15,11 @@ import {
   ArrowUp,
   X,
   Zap,
+  AlertTriangle,
 } from 'lucide-react';
 import { useAuction } from '../context/AuctionContext';
 import { useVirtualGrid } from '../hooks/useVirtualGrid';
+import { isDiplomaPlayer } from '../utils/academicCategories';
 
 export const PlayersList: React.FC<{ onNavigate: (route: string) => void }> = ({ onNavigate }) => {
   const { players, loadingPlayers, fetchPlayers } = useAuction();
@@ -328,6 +330,12 @@ export const PlayersList: React.FC<{ onNavigate: (route: string) => void }> = ({
                               <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 font-mono font-bold text-[10px] border border-amber-500/30">
                                 {p.bucket || 'PG'}
                               </span>
+                              {isDiplomaPlayer(p) && (
+                                <span className="px-2 py-0.5 rounded font-bold text-[9px] bg-rose-950 text-rose-300 border border-rose-600/70 inline-flex items-center gap-1 shadow">
+                                  <AlertTriangle className="w-2.5 h-2.5 text-rose-400" />
+                                  <span>Player detained by 1 year diploma</span>
+                                </span>
+                              )}
                               <span
                                 className={`px-2 py-0.5 rounded font-bold text-[10px] border ${roleBadgeColor}`}
                               >
@@ -441,6 +449,12 @@ export const PlayersList: React.FC<{ onNavigate: (route: string) => void }> = ({
                                 <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 font-mono font-bold text-[10px] border border-amber-500/30">
                                   Bucket {p.bucket || 'PG'}
                                 </span>
+                                {isDiplomaPlayer(p) && (
+                                  <span className="px-2 py-0.5 rounded font-bold text-[9px] bg-rose-950 text-rose-300 border border-rose-600/70 inline-flex items-center gap-1 shadow">
+                                    <AlertTriangle className="w-2.5 h-2.5 text-rose-400" />
+                                    <span>Player detained by 1 year diploma</span>
+                                  </span>
+                                )}
                                 <span
                                   className={`px-2 py-0.5 rounded font-bold text-[10px] border ${roleBadgeColor}`}
                                 >
@@ -484,7 +498,7 @@ export const PlayersList: React.FC<{ onNavigate: (route: string) => void }> = ({
                             <div className="pt-2.5 mt-2 border-t border-slate-800/80 flex items-center justify-between text-xs font-mono">
                               <span className="text-slate-400">Base Price:</span>
                               <span className="font-bold text-amber-400">
-                                {p.base_price || 20} Pts (₹)
+                                {p.base_price || 20} Pts (Purse)
                               </span>
                             </div>
                           </div>
@@ -553,10 +567,17 @@ export const PlayersList: React.FC<{ onNavigate: (route: string) => void }> = ({
                     Auction Base Price
                   </div>
                   <div className="text-sm font-bold font-mono text-amber-400 mt-1">
-                    {selectedPlayer.base_price || 20} Points (₹)
+                    {selectedPlayer.base_price || 20} Pts (Purse)
                   </div>
                 </div>
               </div>
+
+              {isDiplomaPlayer(selectedPlayer) && (
+                <div className="p-3 rounded-xl bg-gradient-to-r from-rose-950 via-red-900 to-rose-950 border border-rose-500/80 text-rose-200 text-xs font-bold font-mono uppercase flex items-center justify-center gap-2 shadow">
+                  <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                  <span>Player detained by 1 year diploma</span>
+                </div>
+              )}
 
               <div className="p-3.5 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2">
                 <div className="flex justify-between items-center">

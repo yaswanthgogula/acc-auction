@@ -146,11 +146,11 @@ export function deriveEffectiveBucket(
   } else if (progUpper === 'PG') {
     normalBucket = 'PG';
   } else {
-    // Year >= 4 (4th/5th/6th, detained laterals, seniors) must not occupy UG B1–B4 quotas.
     if (academicYear === 1) normalBucket = 'B1';
     else if (academicYear === 2) normalBucket = 'B2';
     else if (academicYear === 3) normalBucket = 'B3';
-    else if (academicYear >= 4) normalBucket = 'PG';
+    else if (academicYear === 4) normalBucket = 'B4';
+    else if (academicYear >= 5) normalBucket = 'PG'; // Requirement: 5yr, 6yr, 7yr, ... under PG bucket
     else normalBucket = 'B1';
   }
 
@@ -165,7 +165,7 @@ export function deriveEffectiveBucket(
     if (progUpper === 'DIPLOMA') {
       // Diploma detained moves to lower bucket B1
       effectiveBucket = 'B1';
-      deductionExplanation = 'Detained student deduction: Moved from Diploma (B5) to lower bucket 1st Year (B1)';
+      deductionExplanation = 'Player detained by 1 year diploma: Moved from Diploma (B5) to lower bucket 1st Year (B1)';
     } else if (progUpper === 'PG') {
       effectiveBucket = 'B1';
       deductionExplanation = 'Detained student deduction: Moved from PG (PG) to lower bucket 1st Year (B1)';
@@ -173,10 +173,13 @@ export function deriveEffectiveBucket(
       if (effectiveYear === 1) effectiveBucket = 'B1';
       else if (effectiveYear === 2) effectiveBucket = 'B2';
       else if (effectiveYear === 3) effectiveBucket = 'B3';
-      else if (effectiveYear >= 4) effectiveBucket = 'PG';
+      else if (effectiveYear === 4) effectiveBucket = 'B4';
+      else if (effectiveYear >= 5) effectiveBucket = 'PG';
       else effectiveBucket = 'B1';
       deductionExplanation = `Detained student deduction: Deduced to lower bucket by 1 (${formatAcademicCategory(normalBucket)} ➔ ${formatAcademicCategory(effectiveBucket)})`;
     }
+  } else if (progUpper === 'DIPLOMA' || normalBucket === 'B5') {
+    deductionExplanation = 'Player detained by 1 year diploma';
   }
 
   return {
@@ -188,6 +191,29 @@ export function deriveEffectiveBucket(
     isDeducted,
     deductionExplanation,
   };
+}
+
+export const DIPLOMA_DETAINED_MESSAGE = 'Player detained by 1 year diploma';
+
+export function isDiplomaPlayer(playerOrBucketOrProg: any): boolean {
+  if (!playerOrBucketOrProg) return false;
+  if (typeof playerOrBucketOrProg === 'string') {
+    const s = playerOrBucketOrProg.toUpperCase().trim();
+    return s === 'B5' || s.includes('DIPLOMA');
+  }
+  const prog = (playerOrBucketOrProg.program || playerOrBucketOrProg.prog || '').toUpperCase();
+  const bucket = (playerOrBucketOrProg.bucket || '').toUpperCase();
+  const branch = (playerOrBucketOrProg.branch || '').toUpperCase();
+  const roll = (playerOrBucketOrProg.roll_number || playerOrBucketOrProg.rollNumber || '').toUpperCase();
+  const dept = (playerOrBucketOrProg.dept || '').toUpperCase();
+  return (
+    prog.includes('DIPLOMA') ||
+    bucket === 'B5' ||
+    bucket.includes('DIPLOMA') ||
+    branch.includes('DIPLOMA') ||
+    dept.includes('DIPLOMA') ||
+    /^\d{2}597-[A-Z]+-/.test(roll)
+  );
 }
 
 export const ACADEMIC_CATEGORY_OPTIONS = [

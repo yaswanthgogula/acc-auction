@@ -29,12 +29,13 @@ import {
   AlertTriangle,
   ExternalLink,
   Activity,
+  Lock,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useAuction } from '../context/AuctionContext';
 import { CountdownTimer } from '../components/CountdownTimer';
 import { CricketBatsmanHero } from '../components/CricketBatsmanHero';
-import { formatAcademicCategory } from '../utils/academicCategories';
+import { formatAcademicCategory, isDiplomaPlayer } from '../utils/academicCategories';
 
 interface LandingPageProps {
   onNavigate: (route: string) => void;
@@ -187,7 +188,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               {lastSaleEvent.playerName || 'Player'} SOLD to{' '}
               <span className="underline font-black">{lastSaleEvent.winningFranchiseName || 'Franchise'}</span> for{' '}
               <span className="bg-slate-950 text-amber-400 px-2 py-0.5 rounded font-black">
-                {lastSaleEvent.finalPrice ?? 20} Pts (₹)
+                {lastSaleEvent.finalPrice ?? 20} Pts (Purse)
               </span>
             </span>
           </div>
@@ -287,7 +288,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                     1,000
                   </div>
                   <div className="text-[10px] text-cyan-300/80 font-mono">
-                    Points (₹)
+                    Points (Purse)
                   </div>
                 </div>
               </div>
@@ -306,7 +307,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                 <button
                   onClick={() => onNavigate('/projector')}
                   className="py-4 px-6 rounded-2xl bg-[#09122c]/85 hover:bg-blue-950/80 text-blue-200 hover:text-white border border-blue-500/50 font-bold text-sm flex items-center justify-center gap-2.5 transition cursor-pointer"
-                  title="Auditorium Big Screen Projector View"
+                  title="Auditorium Mega Screen Live Projector View"
                 >
                   <Monitor className="w-5 h-5 text-cyan-400" />
                   <span className="whitespace-nowrap">PROJECTOR VIEW</span>
@@ -403,20 +404,35 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                         <div className="text-xs text-slate-400 font-mono">
                           {activeLot.roll_number || 'Roll N/A'} · {activeLot.branch || 'Avanthi'}
                         </div>
-                        <div className="inline-flex items-center gap-1.5 mt-1.5 px-2.5 py-0.5 rounded-md bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 text-[10px] font-bold">
-                          <Zap className="w-3 h-3 text-cyan-400" />
-                          <span>{activeLot.player_type || 'All-Rounder'}</span>
+                        <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 text-[10px] font-bold">
+                            <Zap className="w-3 h-3 text-cyan-400" />
+                            <span>{activeLot.player_type || 'All-Rounder'}</span>
+                          </span>
+                          {isDiplomaPlayer(activeLot) && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-950 text-rose-300 border border-rose-600/70 text-[10px] font-bold">
+                              <AlertTriangle className="w-3 h-3 text-rose-400" />
+                              <span>Player detained by 1 year diploma</span>
+                            </span>
+                          )}
                         </div>
                       </div>
                     </div>
 
+                    {isDiplomaPlayer(activeLot) && (
+                      <div className="mb-3 px-3 py-1.5 rounded-xl bg-gradient-to-r from-rose-950 via-red-900 to-rose-950 border border-rose-500/80 text-rose-200 text-xs font-bold font-mono uppercase flex items-center justify-center gap-2 shadow">
+                        <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                        <span>Player detained by 1 year diploma</span>
+                      </div>
+                    )}
+
                     <div className="grid grid-cols-2 gap-3 p-3.5 rounded-2xl bg-[#050b1a] border border-blue-900/50 mb-4">
                       <div>
                         <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                          Opening Base
+                          Opening Base Price
                         </div>
                         <div className="text-lg font-black text-slate-200 font-mono tabular-nums">
-                          {activeLot.opening_price || 20} Pts
+                          {activeLot.opening_price || 20} Pts (Purse)
                         </div>
                       </div>
 
@@ -425,7 +441,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                           <TrendingUp className="w-3 h-3" /> Current Bid
                         </div>
                         <div className="text-2xl font-black text-amber-400 font-display tabular-nums">
-                          {currentPrice} Pts (₹)
+                          {currentPrice} Pts (Purse)
                         </div>
                       </div>
                     </div>
@@ -672,10 +688,16 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2 mb-3">
+                <div className="flex flex-wrap items-center gap-1.5 mb-3">
                   <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20 font-mono truncate">
                     {formatAcademicCategory(player.bucket)}
                   </span>
+                  {isDiplomaPlayer(player) && (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-950 text-rose-300 border border-rose-600/70 inline-flex items-center gap-1">
+                      <AlertTriangle className="w-2.5 h-2.5 text-rose-400" />
+                      <span>Player detained by 1 year diploma</span>
+                    </span>
+                  )}
                   <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-slate-800 text-slate-300 truncate">
                     {player.player_type || 'All-Rounder'}
                   </span>
@@ -685,7 +707,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               <div className="pt-2.5 border-t border-blue-950 flex items-center justify-between text-xs">
                 <span className="text-slate-400 text-[11px]">Base Price:</span>
                 <span className="font-mono font-bold text-amber-400 tabular-nums">
-                  {player.is_referred === 1 ? 'Referred' : player.base_price ? `${player.base_price} Pts (₹)` : 'Optional'}
+                  {player.is_referred === 1 ? 'Referred' : player.base_price ? `${player.base_price} Pts (Purse)` : '20 Pts (Purse)'}
                 </span>
               </div>
             </div>
@@ -719,10 +741,16 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                 <div className="text-xs text-slate-300 font-mono">
                   Roll: {selectedPlayer.roll_number} · Dept: {selectedPlayer.branch || 'AIET'}
                 </div>
-                <div className="flex items-center gap-2 mt-1.5">
+                <div className="flex flex-wrap items-center gap-2 mt-1.5">
                   <span className="px-2 py-0.5 rounded text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 font-mono">
                     {formatAcademicCategory(selectedPlayer.bucket)}
                   </span>
+                  {isDiplomaPlayer(selectedPlayer) && (
+                    <span className="px-2 py-0.5 rounded text-xs font-bold bg-rose-950 text-rose-300 border border-rose-500/80 font-mono inline-flex items-center gap-1">
+                      <AlertTriangle className="w-3 h-3 text-rose-400" />
+                      <span>Player detained by 1 year diploma</span>
+                    </span>
+                  )}
                   <span className="px-2 py-0.5 rounded text-xs font-medium bg-blue-500/20 text-cyan-300 border border-blue-500/30">
                     {selectedPlayer.player_type || 'All-Rounder'}
                   </span>

@@ -27,7 +27,7 @@ interface AuthContextType {
   isAuthenticated: boolean;
   token: string | null;
   login: (username: string, password: string, requestedRole?: UserRole) => Promise<{ success: boolean; error?: string; user?: UserSession }>;
-  registerAdmin: (username: string, password: string, confirmPassword?: string, email?: string, role?: UserRole) => Promise<{ success: boolean; error?: string; user?: UserSession }>;
+  registerAdmin: (username: string, password: string, confirmPassword?: string, email?: string) => Promise<{ success: boolean; error?: string; user?: UserSession }>;
   logout: () => void;
   refreshSession: () => Promise<void>;
   getAuthToken: () => Promise<string | null>;
@@ -77,33 +77,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const registerAdmin = async (username: string, password: string, confirmPassword?: string, email?: string, role?: UserRole): Promise<{ success: boolean; error?: string; user?: UserSession }> => {
+  const registerAdmin = async (username: string, password: string, confirmPassword?: string, email?: string): Promise<{ success: boolean; error?: string; user?: UserSession }> => {
     try {
       const res = await fetch('/api/auth/register-admin', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-user-role': user?.role || '',
-          'x-user-id': user?.id || '',
-        },
-        body: JSON.stringify({
-          username,
-          password,
-          confirmPassword,
-          email,
-          role,
-          actorRole: user?.role,
-          actorId: user?.id,
-        }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password, confirmPassword, email }),
       });
       const data = await res.json();
       if (!data.success) {
         return { success: false, error: data.error || 'Admin registration failed' };
       }
-      if (user && (user.role === 'SUPER_ADMIN' || user.role === 'ADMIN')) {
-        return { success: true, user: data.user };
-      }
-      return await login(username, password, 'ADMIN');
+      return await login(username, password, 'SUPER_ADMIN');
     } catch (err: any) {
       return { success: false, error: err.message || 'Network error during registration' };
     }

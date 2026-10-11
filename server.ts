@@ -10,6 +10,7 @@
 import express, { Request, Response } from 'express';
 import compression from 'compression';
 import path from 'path';
+import fs from 'fs';
 import bcrypt from 'bcryptjs';
 import dotenv from 'dotenv';
 dotenv.config();
@@ -89,6 +90,26 @@ app.get('/api/db/status', async (req: Request, res: Response) => {
   }
 });
 
+app.get(['/supabase-db.zip', '/api/download/supabase-db.zip', '/api/download/db-zip'], (req: Request, res: Response) => {
+  const filePath = path.resolve(process.cwd(), 'public', 'supabase-db.zip');
+  if (fs.existsSync(filePath)) {
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', 'attachment; filename="supabase-db.zip"');
+    return res.sendFile(filePath);
+  }
+  res.status(404).json({ success: false, error: 'File not found' });
+});
+
+app.get(['/acc-auction-updates.zip', '/api/download/all-updates-zip'], (req: Request, res: Response) => {
+  const filePath = path.resolve(process.cwd(), 'public', 'acc-auction-updates.zip');
+  if (fs.existsSync(filePath)) {
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', 'attachment; filename="acc-auction-updates.zip"');
+    return res.sendFile(filePath);
+  }
+  res.status(404).json({ success: false, error: 'File not found' });
+});
+
 app.get('/api/tests/run', (req: Request, res: Response) => {
   try {
     const results = runOfficial31Tests();
@@ -125,8 +146,7 @@ app.post('/api/auth/send-otp', (req: Request, res: Response) => {
 
     res.json({
       success: true,
-      message: `OTP sent successfully to ${cleanMobile}. (For testing/demo: ${code})`,
-      demoCode: code,
+      message: `OTP sent successfully to ${cleanMobile}.`,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -200,7 +220,6 @@ app.post('/api/auth/forgot-password/send-otp', (req: Request, res: Response) => 
       mobile: targetMobile,
       playerName: player.name,
       rollNumber: player.roll_number,
-      demoCode: code,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -331,15 +350,7 @@ app.post('/api/auth/register-admin', async (req: Request, res: Response) => {
       });
     }
 
-    const requestedRole = String(role || '').toUpperCase();
-    let targetRole: 'SUPER_ADMIN' | 'ADMIN' | 'OPERATOR' = 'ADMIN';
-    if (existingAdminCount === 0) {
-      targetRole = requestedRole === 'OPERATOR' ? 'OPERATOR' : 'SUPER_ADMIN';
-    } else if (requestedRole === 'OPERATOR') {
-      targetRole = 'OPERATOR';
-    } else {
-      targetRole = 'ADMIN';
-    }
+    const targetRole = role === 'OPERATOR' ? 'OPERATOR' : 'SUPER_ADMIN';
     const passwordHash = await bcrypt.hash(password, 10);
     const id = `USR_ADMIN_${Date.now()}`;
     const now = Date.now();
@@ -427,7 +438,7 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
       return res.status(401).json({ success: false, error: 'Invalid credentials. Password incorrect.' });
     }
 
-    if (role === 'ADMIN' || role === 'SUPER_ADMIN' || role === 'OPERATOR') {
+    if (role === 'ADMIN') {
       if (user.role !== 'SUPER_ADMIN' && user.role !== 'OPERATOR' && user.role !== 'ADMIN') {
         return res.status(403).json({ success: false, error: 'Account does not have Administrator privileges.' });
       }
@@ -749,7 +760,6 @@ app.post('/api/players/submit-phase2', async (req: Request, res: Response) => {
 app.put('/api/players/profile', async (req: Request, res: Response) => {
   try {
     const actorPlayerId = (req.headers['x-user-player-id'] as string) || req.body?.playerId;
-    const actorRole = (req.headers['x-user-role'] as string) || req.body?.role;
 
     if (!actorPlayerId) {
       return res.status(401).json({ success: false, error: 'Player authentication required.' });
@@ -878,14 +888,13 @@ app.get('/api/admin/pending-approvals', (req: Request, res: Response) => {
 
 app.post('/api/admin/approve-player', (req: Request, res: Response) => {
   try {
-    const { playerId, status, rejectionReason, basePrice, session, actor } = req.body;
+    const { playerId, status, rejectionReason, basePrice, session } = req.body;
     if (!playerId) return res.status(400).json({ success: false, error: 'Player ID required.' });
 
     const player = queryOne('SELECT * FROM players WHERE id = ?', [playerId]);
     if (!player) return res.status(404).json({ success: false, error: 'Player not found.' });
 
-    const normalizedStatus = status === 'REJECTED' ? 'REJECTED' : (status === 'APPROVED' ? 'APPROVED' : (status || 'APPROVED'));
-    const isApproved = normalizedStatus === 'APPROVED';
+    const isApproved = status === 'APPROVED';
     const isAuctionEligible = isApproved && player.is_referred !== 1 ? 1 : 0;
     const now = Date.now();
     const assignedSession = session ? parseInt(session, 10) : (player.auction_session || 1);
@@ -900,9 +909,9 @@ app.post('/api/admin/approve-player', (req: Request, res: Response) => {
            updated_at = ?
        WHERE id = ?`,
       [
-        normalizedStatus,
+        status || 'APPROVED',
         isAuctionEligible,
-        normalizedStatus === 'REJECTED' ? (rejectionReason || 'Profile does not meet tournament criteria') : null,
+        status === 'REJECTED' ? rejectionReason || 'Profile does not meet tournament criteria' : null,
         basePrice !== undefined ? parseInt(basePrice, 10) : player.base_price,
         assignedSession,
         now,
@@ -917,7 +926,7 @@ app.post('/api/admin/approve-player', (req: Request, res: Response) => {
 
     res.json({
       success: true,
-      message: `Player '${player.name}' has been ${normalizedStatus}. Auction eligibility: ${isAuctionEligible ? 'ELIGIBLE' : 'INELIGIBLE'}.`,
+      message: `Player '${player.name}' has been ${status}. Auction eligibility: ${isAuctionEligible ? 'ELIGIBLE' : 'INELIGIBLE'}.`,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -943,7 +952,7 @@ app.post('/api/admin/session/control', async (req: Request, res: Response) => {
 
 app.post('/api/admin/session/assign-players', (req: Request, res: Response) => {
   try {
-    const { playerIds, session, actor } = req.body;
+    const { playerIds, session } = req.body;
     if (!Array.isArray(playerIds) || playerIds.length === 0) {
       return res.status(400).json({ success: false, error: 'List of player IDs required.' });
     }
@@ -1334,13 +1343,6 @@ app.delete('/api/players/:id', async (req: Request, res: Response) => {
 
 app.get('/api/auction/guest-draw-candidates', (req: Request, res: Response) => {
   try {
-    const actorRole = (req.headers['x-user-role'] as string) || (req.query?.role as string);
-    if (actorRole !== 'SUPER_ADMIN' && actorRole !== 'ADMIN' && actorRole !== 'OPERATOR') {
-      return res.status(403).json({
-        success: false,
-        error: 'PERMISSION_DENIED: Guest Draw Mode is restricted to authenticated administrators.',
-      });
-    }
     const edition = auctionManager.getActiveEdition();
     const editionId = (req.query.editionId as string) || (edition ? edition.id : 'ED_ACC_2026');
     const candidates = auctionManager.getEligibleGuestDrawPlayers(editionId);
@@ -1440,18 +1442,6 @@ app.post('/api/franchises', async (req: Request, res: Response) => {
     if (!name || !name.trim()) {
       return res.status(400).json({ success: false, error: 'Franchise name required.' });
     }
-    if (!facultyCoordinator || !String(facultyCoordinator).trim()) {
-      return res.status(400).json({ success: false, error: 'Coordinator Name is required.' });
-    }
-    if (!facultyMobile && !leaderMobile) {
-      return res.status(400).json({ success: false, error: 'Coordinator Mobile Number is required.' });
-    }
-    if (!captainName || !String(captainName).trim()) {
-      return res.status(400).json({ success: false, error: 'Captain Name is required.' });
-    }
-    if (!viceCaptainName || !String(viceCaptainName).trim()) {
-      return res.status(400).json({ success: false, error: 'Vice-Captain Name is required.' });
-    }
 
     const currentFranchises = queryAll('SELECT id FROM franchises WHERE edition_id = ?', [effectiveEditionId]);
     if (currentFranchises.length >= 11) {
@@ -1468,12 +1458,10 @@ app.post('/api/franchises', async (req: Request, res: Response) => {
     const resolvedCaptainSpecialty = captainSpecialty || `${resolvedCaptainRole} Captain`;
     const resolvedViceCaptainRole = viceCaptainRole || viceCaptainSkill || 'All-Rounder';
     const resolvedViceCaptainSpecialty = viceCaptainSpecialty || `${resolvedViceCaptainRole} Vice-Captain`;
-    const resolvedCaptainRoll = (captainRoll || captainStats?.roll || '').toString().trim().toUpperCase() || null;
-    const resolvedViceCaptainRoll = (viceCaptainRoll || viceCaptainStats?.roll || '').toString().trim().toUpperCase() || null;
 
     const captainStatsObj = {
       ...(captainStats || {}),
-      roll: resolvedCaptainRoll || '',
+      roll: captainRoll ? captainRoll.trim().toUpperCase() : (captainStats?.roll || ''),
       role: resolvedCaptainRole,
       specialty: resolvedCaptainSpecialty,
       battingStyle: captainBattingStyle || captainStats?.battingStyle || 'Right Hand Bat',
@@ -1484,7 +1472,7 @@ app.post('/api/franchises', async (req: Request, res: Response) => {
 
     const viceCaptainStatsObj = {
       ...(viceCaptainStats || {}),
-      roll: resolvedViceCaptainRoll || '',
+      roll: viceCaptainRoll ? viceCaptainRoll.trim().toUpperCase() : (viceCaptainStats?.roll || ''),
       role: resolvedViceCaptainRole,
       specialty: resolvedViceCaptainSpecialty,
       battingStyle: viceCaptainBattingStyle || viceCaptainStats?.battingStyle || 'Right Hand Bat',
@@ -1551,8 +1539,8 @@ app.post('/api/franchises', async (req: Request, res: Response) => {
           resolvedFacultyMobile,
           captainName ? captainName.trim() : null,
           viceCaptainName ? viceCaptainName.trim() : null,
-          resolvedCaptainRoll,
-          resolvedViceCaptainRoll,
+          captainRoll ? captainRoll.trim().toUpperCase() : null,
+          viceCaptainRoll ? viceCaptainRoll.trim().toUpperCase() : null,
           captainMobile ? captainMobile.trim() : null,
           resolvedCaptainRole,
           resolvedCaptainSpecialty,
@@ -1611,8 +1599,6 @@ app.post('/api/franchises', async (req: Request, res: Response) => {
       leader_mobile: resolvedFacultyMobile,
       captain_name: captainName || null,
       vice_captain_name: viceCaptainName || null,
-      captain_roll: resolvedCaptainRoll,
-      vice_captain_roll: resolvedViceCaptainRoll,
       captain_mobile: captainMobile || null,
       captain_skill: resolvedCaptainRole,
       captain_specialty: resolvedCaptainSpecialty,
@@ -1791,10 +1777,19 @@ app.put('/api/franchises/:id/captain-stats', async (req: Request, res: Response)
 app.delete('/api/franchises/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const actorRole = (req.headers['x-user-role'] as string) || req.body?.role;
+    const actorRole = (req.headers['x-user-role'] as string) || req.body?.role || (req.query?.role as string);
+    const actorId = (req.headers['x-user-id'] as string) || req.body?.userId || (req.query?.userId as string);
     const actorUsername = (req.headers['x-user-username'] as string) || req.body?.username || 'Admin';
 
-    if (actorRole !== 'SUPER_ADMIN' && actorRole !== 'ADMIN' && actorRole !== 'OPERATOR') {
+    let isAuthorizedAdmin = actorRole === 'SUPER_ADMIN' || actorRole === 'ADMIN' || actorRole === 'OPERATOR';
+    if (!isAuthorizedAdmin && actorId) {
+      const user = queryOne('SELECT role, username FROM users WHERE id = ?', [actorId]);
+      if (user && (user.role === 'SUPER_ADMIN' || user.role === 'ADMIN' || user.role === 'OPERATOR')) {
+        isAuthorizedAdmin = true;
+      }
+    }
+
+    if (!isAuthorizedAdmin) {
       return res.status(403).json({
         success: false,
         error: 'PERMISSION_DENIED: Only administrators have permission to delete franchises.',
@@ -1944,7 +1939,6 @@ app.get('/api/admin/referrals', (req: Request, res: Response) => {
 
 app.post('/api/admin/referrals/decide', (req: Request, res: Response) => {
   try {
-    const actorRole = (req.headers['x-user-role'] as string) || req.body?.actorRole || 'ADMIN';
     const { playerId, decision, basePrice } = req.body;
 
     if (!playerId || !decision) {
@@ -2006,7 +2000,7 @@ app.post('/api/admin/referrals/decide', (req: Request, res: Response) => {
       return res.json({
         success: true,
         decision: 'ACCEPTED',
-        message: `Referred player '${player.name}' was accepted by Admin and successfully added to ${player.referring_franchise_name || 'franchise'} squad!`,
+        message: `Referred player '${player.name}' was accepted by Admin and successfully added to ${player.referring_franchise_name || 'franchise'} squad for 0 Pts (Purse)!`,
       });
     } else {
       const resolvedBp = basePrice ? parseInt(basePrice, 10) : 20;
@@ -2031,7 +2025,7 @@ app.post('/api/admin/referrals/decide', (req: Request, res: Response) => {
       return res.json({
         success: true,
         decision: 'SENT_TO_AUCTION',
-        message: `Referral declined for '${player.name}'. Player has been assigned base price ₹${resolvedBp} Lakhs and sent directly to the Live Auction pool!`,
+        message: `Referral declined for '${player.name}'. Player has been assigned base price ${resolvedBp} Pts (Purse) and sent directly to the Live Auction pool!`,
       });
     }
   } catch (err: any) {
@@ -2235,6 +2229,8 @@ app.get('/api/auction/state', (req: Request, res: Response) => {
       customTimerAlert: auctionManager.getCustomTimerAlert(),
       isPaused: auctionManager.getIsPaused(),
       pausedRemainingMs: auctionManager.getPausedRemainingMs(),
+      autoDrawMode: auctionManager.getAutoDrawMode(),
+      currentDrawMode: auctionManager.getCurrentDrawMode(),
       serverTime: Date.now(),
     });
   } catch (err: any) {
@@ -2273,7 +2269,67 @@ app.post('/api/auction/bid', async (req: Request, res: Response) => {
 app.post('/api/auction/pass', async (req: Request, res: Response) => {
   try {
     const { franchiseId, editionId } = req.body;
-    const result = await auctionManager.passLot(franchiseId, editionId);
+    if (!franchiseId) {
+      return res.status(400).json({ success: false, error: 'Franchise ID is required to pass.' });
+    }
+    const activeEd = editionId || auctionManager.getActiveEdition()?.id || 'ED_ACC_2026';
+    const franchise = queryOne(
+      'SELECT id, name FROM franchises WHERE id = ? OR LOWER(custom_id) = ? OR LOWER(name) = ? LIMIT 1',
+      [franchiseId, String(franchiseId).toLowerCase(), String(franchiseId).toLowerCase()]
+    );
+    const targetFranchiseId = franchise ? franchise.id : franchiseId;
+
+    const lot = auctionManager.getCurrentLot(activeEd);
+    if (!lot) {
+      return res.status(400).json({ success: false, error: 'No active lot in auction.' });
+    }
+
+    if (lot.highest_bidder_id && lot.highest_bidder_id === targetFranchiseId) {
+      return res.status(400).json({ success: false, error: 'Current winning bidder cannot pass.' });
+    }
+
+    const result = await auctionManager.passLot(targetFranchiseId, activeEd);
+    auctionManager.broadcast('STATE_UPDATED', { reason: 'FRANCHISE_PASSED', franchiseId: targetFranchiseId });
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/auction/set-draw-mode', async (req: Request, res: Response) => {
+  try {
+    const { mode, actor } = req.body;
+    const isAuto = mode === 'AUTO';
+    const result = auctionManager.setAutoDrawMode(isAuto, mode || (isAuto ? 'AUTO' : 'GUEST'), actor || 'Admin');
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/auction/unsold-players', (req: Request, res: Response) => {
+  try {
+    const edition = auctionManager.getActiveEdition();
+    const editionId = (req.query.editionId as string) || (edition ? edition.id : 'ED_ACC_2026');
+    const unsoldPlayers = auctionManager.getUnsoldPlayers(editionId);
+    res.json({ success: true, players: unsoldPlayers });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/auction/re-admit-unsold', async (req: Request, res: Response) => {
+  try {
+    const { playerId, editionId, actor } = req.body;
+    const actorRole = (req.headers['x-user-role'] as string) || req.body?.role;
+    if (actorRole && actorRole !== 'SUPER_ADMIN' && actorRole !== 'ADMIN') {
+      return res.status(403).json({ success: false, error: 'PERMISSION_DENIED: Only administrators can re-admit unsold players.' });
+    }
+    if (!playerId) {
+      return res.status(400).json({ success: false, error: 'Player ID is required.' });
+    }
+    const activeEd = editionId || auctionManager.getActiveEdition()?.id || 'ED_ACC_2026';
+    const result = await auctionManager.reAdmitUnsoldPlayer(activeEd, playerId, actor || 'Admin');
     res.json(result);
   } catch (err: any) {
     res.status(400).json({ success: false, error: err.message });
@@ -2320,8 +2376,29 @@ app.post('/api/auction/timer/reset', async (req: Request, res: Response) => {
 app.post('/api/auction/draw-next', async (req: Request, res: Response) => {
   try {
     const { editionId, mode, playerId, identifier, actor } = req.body;
+    const actorRole = (req.headers['x-user-role'] as string) || req.body?.role || (req.query?.role as string);
+    const actorId = (req.headers['x-user-id'] as string) || req.body?.userId;
+
+    const isSystemActor = actor === 'SystemTimer' || actor === 'SYSTEM_AUTO_TRANSITION';
+    const isGuestMode = mode === 'GUEST';
+    let isAuthorized = isGuestMode || isSystemActor || actorRole === 'SUPER_ADMIN' || actorRole === 'ADMIN' || actorRole === 'OPERATOR';
+
+    if (!isAuthorized && actorId) {
+      const user = queryOne('SELECT role FROM users WHERE id = ?', [actorId]);
+      if (user && (user.role === 'SUPER_ADMIN' || user.role === 'ADMIN' || user.role === 'OPERATOR')) {
+        isAuthorized = true;
+      }
+    }
+
+    if (!isAuthorized) {
+      return res.status(403).json({
+        success: false,
+        error: 'PERMISSION_DENIED: Only administrators have permission to start the auction or draw players.',
+      });
+    }
+
     const targetLotId = playerId || identifier;
-    const lot = await auctionManager.drawNextPlayer(editionId, mode || 'AUTO', targetLotId, actor);
+    const lot = await auctionManager.drawNextPlayer(editionId, mode || 'AUTO', targetLotId, actor || actorRole || (isGuestMode ? 'Guest' : 'Admin'));
     res.json({ success: true, lot });
   } catch (err: any) {
     res.status(400).json({ success: false, error: err.message });
@@ -2331,8 +2408,29 @@ app.post('/api/auction/draw-next', async (req: Request, res: Response) => {
 app.post('/api/auction/draw', async (req: Request, res: Response) => {
   try {
     const { editionId, mode, playerId, identifier, actor } = req.body;
+    const actorRole = (req.headers['x-user-role'] as string) || req.body?.role || (req.query?.role as string);
+    const actorId = (req.headers['x-user-id'] as string) || req.body?.userId;
+
+    const isSystemActor = actor === 'SystemTimer' || actor === 'SYSTEM_AUTO_TRANSITION';
+    const isGuestMode = mode === 'GUEST';
+    let isAuthorized = isGuestMode || isSystemActor || actorRole === 'SUPER_ADMIN' || actorRole === 'ADMIN' || actorRole === 'OPERATOR';
+
+    if (!isAuthorized && actorId) {
+      const user = queryOne('SELECT role FROM users WHERE id = ?', [actorId]);
+      if (user && (user.role === 'SUPER_ADMIN' || user.role === 'ADMIN' || user.role === 'OPERATOR')) {
+        isAuthorized = true;
+      }
+    }
+
+    if (!isAuthorized) {
+      return res.status(403).json({
+        success: false,
+        error: 'PERMISSION_DENIED: Only administrators have permission to start the auction or draw players.',
+      });
+    }
+
     const targetLotId = playerId || identifier;
-    const lot = await auctionManager.drawNextPlayer(editionId, mode || 'AUTO', targetLotId, actor);
+    const lot = await auctionManager.drawNextPlayer(editionId, mode || 'AUTO', targetLotId, actor || actorRole || (isGuestMode ? 'Guest' : 'Admin'));
     res.json({ success: true, lot });
   } catch (err: any) {
     res.status(400).json({ success: false, error: err.message });
@@ -2375,24 +2473,6 @@ app.post('/api/auction/resume', async (req: Request, res: Response) => {
     res.json({ success: true, isPaused: false, message: 'Auction is already running.' });
   } catch (err: any) {
     res.status(400).json({ success: false, error: err.message });
-  }
-});
-
-app.get('/api/auction/guest-draw-candidates', (req: Request, res: Response) => {
-  try {
-    const actorRole = (req.headers['x-user-role'] as string) || (req.query?.role as string);
-    if (actorRole !== 'SUPER_ADMIN' && actorRole !== 'ADMIN' && actorRole !== 'OPERATOR') {
-      return res.status(403).json({
-        success: false,
-        error: 'PERMISSION_DENIED: Guest Draw Mode is restricted to authenticated administrators.',
-      });
-    }
-    const edition = auctionManager.getActiveEdition();
-    const editionId = (req.query.editionId as string) || (edition ? edition.id : 'ED_ACC_2026');
-    const candidates = auctionManager.getEligibleGuestDrawPlayers(editionId);
-    res.json({ success: true, candidates });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
   }
 });
 

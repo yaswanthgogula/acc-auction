@@ -11,7 +11,7 @@ import { CountdownTimer } from '../components/CountdownTimer';
 import { AvanthiLogo } from '../components/AvanthiLogo';
 import { AuctionNotificationBanner } from '../components/AuctionNotificationBanner';
 import { GuestDrawModal } from '../components/GuestDrawModal';
-import { formatAcademicCategory } from '../utils/academicCategories';
+import { formatAcademicCategory, isDiplomaPlayer } from '../utils/academicCategories';
 import { auctionSound } from '../utils/auctionSound';
 import {
   Users,
@@ -29,10 +29,15 @@ import {
   VolumeX,
   Lock,
   Unlock,
+  KeyRound,
+  ArrowLeft,
+  AlertCircle,
+  LogIn,
+  AlertTriangle,
 } from 'lucide-react';
 
 export const ProjectorView: React.FC<{ onExit: () => void }> = ({ onExit }) => {
-  const { user } = useAuth();
+  const { user, login } = useAuth();
   const {
     currentLot,
     franchises,
@@ -44,6 +49,9 @@ export const ProjectorView: React.FC<{ onExit: () => void }> = ({ onExit }) => {
     pausedRemainingMs,
     togglePauseAuction,
     drawNextPlayer,
+    setDrawMode,
+    autoDrawMode,
+    currentDrawMode,
     adjustTimer,
     soundEnabled,
     toggleSound,
@@ -54,6 +62,10 @@ export const ProjectorView: React.FC<{ onExit: () => void }> = ({ onExit }) => {
   const [adminUnlocked, setAdminUnlocked] = useState<boolean>(() => {
     return isUserAdmin || localStorage.getItem('acc_projector_admin') === 'true';
   });
+  const [adminUsername, setAdminUsername] = useState('');
+  const [adminPassword, setAdminPassword] = useState('');
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [authMode, setAuthMode] = useState<'LOGIN' | 'PASSCODE'>('LOGIN');
   const [showAdminAuthModal, setShowAdminAuthModal] = useState(false);
   const [adminPasscode, setAdminPasscode] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
@@ -70,6 +82,33 @@ export const ProjectorView: React.FC<{ onExit: () => void }> = ({ onExit }) => {
   const isSoldOrHammered = currentLot?.lot_state === 'SOLD' || (lastSaleEvent && lastSaleEvent.lotState === 'SOLD');
   const isUnsold = currentLot?.lot_state === 'UNSOLD';
 
+  const handleAdminLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!adminUsername.trim() || !adminPassword.trim()) {
+      setAuthError('Please enter both Admin username and password.');
+      return;
+    }
+    setIsLoggingIn(true);
+    setAuthError(null);
+    try {
+      const res = await login(adminUsername.trim(), adminPassword, 'SUPER_ADMIN');
+      if (res.success && res.user && (res.user.role === 'SUPER_ADMIN' || res.user.role === 'ADMIN')) {
+        setAdminUnlocked(true);
+        localStorage.setItem('acc_projector_admin', 'true');
+        setAdminUsername('');
+        setAdminPassword('');
+        setHammerFeedback(`👑 Welcome Admin ${res.user.username}! Stage projector unlocked.`);
+        setTimeout(() => setHammerFeedback(null), 3500);
+      } else {
+        setAuthError(res.error || 'Invalid administrator credentials. Access denied.');
+      }
+    } catch (err: any) {
+      setAuthError(err.message || 'Login error occurred.');
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
   const handleAdminVerify = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     const clean = adminPasscode.trim().toLowerCase();
@@ -79,11 +118,24 @@ export const ProjectorView: React.FC<{ onExit: () => void }> = ({ onExit }) => {
       setShowAdminAuthModal(false);
       setAdminPasscode('');
       setAuthError(null);
-      setHammerFeedback('👑 Admin Auctioneer Authority Unlocked for Projector Screen!');
+      setHammerFeedback('👑 Admin Stage Authority Unlocked for Projector Screen!');
       setTimeout(() => setHammerFeedback(null), 3500);
     } else {
-      setAuthError('Invalid Admin Passcode. Default is "admin" or "admin123".');
+      setAuthError('Invalid Admin Passcode. Please enter your authorized admin passcode.');
     }
+  };
+
+  const handleOpenGuestDraw = async () => {
+    if (!isAdmin) {
+      setHammerFeedback('🔒 Admin access only: Guest Draw is restricted to administrators.');
+      setTimeout(() => setHammerFeedback(null), 3500);
+      return;
+    }
+    // When admin clicks Guest Draw Mode, automatic draw mode stops until admin clicks Random Draw Mode
+    try {
+      await setDrawMode('GUEST');
+    } catch {}
+    setShowGuestDrawModal(true);
   };
 
   const handleTogglePause = async () => {
@@ -148,7 +200,7 @@ export const ProjectorView: React.FC<{ onExit: () => void }> = ({ onExit }) => {
       setHammerStage(0);
       setHammerFeedback(
         action === 'HAMMER_SALE' && currentLot.highest_bidder_id
-          ? `🔨 SOLD! Confirmed by Admin for ₹${currentLot.current_price} to ${currentLot.highest_bidder_name}`
+          ? `🔨 SOLD! Confirmed by Admin for ${currentLot.current_price} Pts (Purse) to ${currentLot.highest_bidder_name}`
           : 'Player marked UNSOLD by Stage Admin.'
       );
       await refreshState({ force: true });
@@ -184,6 +236,8 @@ export const ProjectorView: React.FC<{ onExit: () => void }> = ({ onExit }) => {
     setDrawingAuto(true);
     setHammerFeedback(null);
     try {
+      // When admin clicks Random Draw Mode, automatic draw mode is activated again
+      await setDrawMode('AUTO');
       const res = await drawNextPlayer('AUTO');
       if (!res.success) {
         throw new Error(res.error || 'No more players available for this session.');
@@ -211,8 +265,6 @@ export const ProjectorView: React.FC<{ onExit: () => void }> = ({ onExit }) => {
 
   return (
     <div className="fixed inset-0 z-50 bg-[#020617] text-white flex flex-col select-none overflow-hidden font-sans">
-      <AuctionNotificationBanner />
-
       <div className="w-full bg-slate-950/95 border-b border-slate-800 px-6 sm:px-8 py-3 flex items-center justify-between z-20 shadow-xl backdrop-blur-md">
         <div className="flex items-center gap-4 sm:gap-5">
           <AvanthiLogo size="lg" showText={true} />
@@ -231,6 +283,39 @@ export const ProjectorView: React.FC<{ onExit: () => void }> = ({ onExit }) => {
         </div>
 
         <div className="flex items-center gap-2 sm:gap-3">
+          {isAdmin ? (
+            <div className="flex items-center gap-2">
+              <div className="hidden xl:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-emerald-950/60 border border-emerald-500/40 text-emerald-300 text-xs font-mono font-bold">
+                <Shield className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Admin: {user?.username || 'Stage Controller'}</span>
+              </div>
+              <button
+                onClick={() => {
+                  setAdminUnlocked(false);
+                  localStorage.removeItem('acc_projector_admin');
+                  setHammerFeedback('Stage controller locked to audience view.');
+                  setTimeout(() => setHammerFeedback(null), 3000);
+                }}
+                className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-amber-400 border border-slate-800 text-xs transition cursor-pointer"
+                title="Lock Stage Controls"
+              >
+                <Lock className="w-4 h-4" />
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => {
+                setAuthError(null);
+                setShowAdminAuthModal(true);
+              }}
+              className="px-3 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-400/50 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shadow"
+              title="Admin Stage Controller Login / Unlock"
+            >
+              <Lock className="w-3.5 h-3.5 text-amber-400" />
+              <span>Admin Unlock</span>
+            </button>
+          )}
+
           <button
             onClick={handleTogglePause}
             disabled={pausing}
@@ -255,7 +340,7 @@ export const ProjectorView: React.FC<{ onExit: () => void }> = ({ onExit }) => {
           </button>
 
           <button
-            onClick={() => setShowGuestDrawModal(true)}
+            onClick={handleOpenGuestDraw}
             className="px-3.5 py-1.5 sm:px-4 sm:py-2 rounded-xl bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-black uppercase tracking-wider flex items-center gap-1.5 transition cursor-pointer shadow-lg shadow-purple-950/50 border border-purple-400/50"
             title="Open Guest Draw Mode with masked cards for guest VIP on stage"
           >
@@ -279,6 +364,18 @@ export const ProjectorView: React.FC<{ onExit: () => void }> = ({ onExit }) => {
             title={soundEnabled ? 'Mute Stadium Sounds' : 'Enable Stadium Sounds'}
           >
             {soundEnabled ? <Volume2 className="w-4 h-4 text-amber-400" /> : <VolumeX className="w-4 h-4 text-slate-500" />}
+          </button>
+
+          <button
+            onClick={() => {
+              setAdminUnlocked(false);
+              localStorage.removeItem('acc_projector_admin');
+              onExit();
+            }}
+            className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-amber-400 border border-slate-800 text-xs transition cursor-pointer"
+            title="Lock Stage & Exit"
+          >
+            <Lock className="w-4 h-4" />
           </button>
 
           <button
@@ -337,7 +434,7 @@ export const ProjectorView: React.FC<{ onExit: () => void }> = ({ onExit }) => {
                 {currentLot?.highest_bidder_name || lastSaleEvent?.winningFranchiseName || 'Winning Franchise'}
               </div>
               <div className="text-xl font-mono font-black text-amber-950">
-                Final Bid: {currentLot?.current_price || lastSaleEvent?.finalPrice} Pts (₹)
+                Final Bid: {currentLot?.current_price || lastSaleEvent?.finalPrice} Pts (Purse)
               </div>
             </div>
           </div>
@@ -395,6 +492,13 @@ export const ProjectorView: React.FC<{ onExit: () => void }> = ({ onExit }) => {
                   Session {currentLot.auction_session || activeSession}
                 </span>
               </div>
+
+              {isDiplomaPlayer(currentLot) && (
+                <div className="mt-2.5 px-4 py-2 rounded-xl bg-gradient-to-r from-rose-950 via-red-900 to-rose-950 border-2 border-rose-500 text-rose-200 text-xs font-bold font-mono uppercase flex items-center justify-center gap-2 shadow-xl shadow-rose-950/60 animate-pulse text-center">
+                  <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                  <span>Player detained by 1 year diploma</span>
+                </div>
+              )}
             </div>
 
             <div className="lg:col-span-8 flex flex-col gap-4">
@@ -412,6 +516,12 @@ export const ProjectorView: React.FC<{ onExit: () => void }> = ({ onExit }) => {
                   <span className="px-3 py-1 rounded-xl bg-blue-600/30 text-cyan-300 border border-blue-500/40 font-bold text-xs uppercase">
                     {currentLot.player_type || 'All-Rounder'}
                   </span>
+                  {isDiplomaPlayer(currentLot) && (
+                    <span className="px-3 py-1 rounded-xl bg-rose-950 text-rose-300 border-2 border-rose-500/80 font-bold text-xs uppercase flex items-center gap-1.5 shadow-md">
+                      <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                      <span>Player detained by 1 year diploma</span>
+                    </span>
+                  )}
                   {currentLot.batting_style && (
                     <span className="px-3 py-1 rounded-xl bg-slate-900 text-slate-300 border border-slate-800 font-mono text-xs">
                       Bat: {currentLot.batting_style}
@@ -456,10 +566,10 @@ export const ProjectorView: React.FC<{ onExit: () => void }> = ({ onExit }) => {
                     Current Highest Bid
                   </span>
                   <div className="font-display text-4xl sm:text-5xl font-black text-amber-400 my-0.5">
-                    {currentLot.current_price} <span className="text-lg text-amber-300">Pts (₹)</span>
+                    {currentLot.current_price} <span className="text-lg text-amber-300">Pts (Purse)</span>
                   </div>
                   <span className="text-[10px] text-slate-400 font-mono">
-                    Opening Base: {currentLot.opening_price} Pts
+                    Base Price: {currentLot.opening_price} Pts (Purse)
                   </span>
                 </div>
               </div>
@@ -541,11 +651,12 @@ export const ProjectorView: React.FC<{ onExit: () => void }> = ({ onExit }) => {
             <div className="flex flex-col sm:flex-row items-center gap-4 mt-8 w-full">
               <button
                 type="button"
-                onClick={() => setShowGuestDrawModal(true)}
+                onClick={handleOpenGuestDraw}
                 className="w-full sm:flex-1 py-4 px-6 rounded-2xl bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-600 hover:from-purple-500 hover:to-indigo-500 text-white font-black text-sm uppercase tracking-wider flex items-center justify-center gap-2.5 shadow-2xl shadow-purple-950/60 transition cursor-pointer border border-purple-400/60 transform hover:scale-[1.02]"
               >
                 <Sparkles className="w-5 h-5 text-amber-300 animate-spin" />
                 <span>GUEST LUCKY DRAW (MASKED)</span>
+                {!isAdmin && <Lock className="w-4 h-4 text-purple-200 ml-1 opacity-90" />}
               </button>
 
               <button
@@ -556,6 +667,7 @@ export const ProjectorView: React.FC<{ onExit: () => void }> = ({ onExit }) => {
               >
                 <Play className="w-5 h-5 fill-current" />
                 <span>{drawingAuto ? 'Drawing Lot...' : 'DRAW NEXT LOT (BUCKET ORDER)'}</span>
+                {!isAdmin && <Lock className="w-4 h-4 text-slate-950 ml-1 opacity-90" />}
               </button>
             </div>
           </div>
@@ -577,7 +689,7 @@ export const ProjectorView: React.FC<{ onExit: () => void }> = ({ onExit }) => {
                   </span>
                 </span>
                 <span className="text-[10px] text-slate-400">
-                  Lot: <strong className="text-amber-300">{currentLot.player_name}</strong> • Current Bid: <strong className="text-amber-400 font-mono">₹{currentLot.current_price}</strong> by <strong className="text-cyan-300">{currentLot.highest_bidder_name || 'No Bidder Yet'}</strong>
+                  Lot: <strong className="text-amber-300">{currentLot.player_name}</strong> • Current Bid: <strong className="text-amber-400 font-mono">{currentLot.current_price} Pts (Purse)</strong> by <strong className="text-cyan-300">{currentLot.highest_bidder_name || 'No Bidder Yet'}</strong>
                 </span>
               </div>
             </div>
@@ -604,7 +716,7 @@ export const ProjectorView: React.FC<{ onExit: () => void }> = ({ onExit }) => {
                   className="px-2.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-400 border border-slate-800 text-[10px] font-mono flex items-center gap-1 cursor-pointer"
                   title="Lock hammer controls to Guest Mode"
                 >
-                  <Unlock className="w-3 h-3 text-emerald-400" />
+                  <Unlock className="w-3.5 h-3.5 text-emerald-400" />
                   <span>Admin Authority Active</span>
                 </button>
               )}
@@ -679,7 +791,7 @@ export const ProjectorView: React.FC<{ onExit: () => void }> = ({ onExit }) => {
 
               <button
                 type="button"
-                onClick={() => setShowGuestDrawModal(true)}
+                onClick={handleOpenGuestDraw}
                 className="px-3 py-2 rounded-xl bg-purple-900/60 hover:bg-purple-800 text-purple-300 border border-purple-700 text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
                 title="Guest Draw Mode"
               >
@@ -724,66 +836,147 @@ export const ProjectorView: React.FC<{ onExit: () => void }> = ({ onExit }) => {
               </div>
               <div>
                 <h3 className="font-heading text-xl font-black text-white uppercase tracking-tight">
-                  Admin Auctioneer Access
+                  Admin Authority Required
                 </h3>
                 <span className="text-xs text-amber-400 font-mono">
-                  Hammer strikes are restricted to Stage Admins only
+                  Only Admins can start auction or use guest draw
                 </span>
               </div>
             </div>
 
             <p className="text-xs text-slate-300 leading-relaxed">
-              Guests can view the screen and draw cards, but striking the hammer and concluding auction lots requires Admin Auctioneer authorization.
+              Everyone can watch this projector screen, but starting the auction, using the Guest Draw option, and striking the hammer are strictly restricted to authorized tournament Administrators.
             </p>
 
-            <form onSubmit={handleAdminVerify} className="flex flex-col gap-4">
-              <div>
-                <label className="block text-slate-300 text-xs font-bold mb-1.5 font-mono">
-                  Enter Admin Passcode / PIN:
-                </label>
-                <div className="flex items-center gap-2">
+            <div className="flex rounded-xl bg-slate-950 p-1 border border-slate-800 text-xs">
+              <button
+                type="button"
+                onClick={() => { setAuthMode('LOGIN'); setAuthError(null); }}
+                className={`flex-1 py-2 font-bold rounded-lg transition cursor-pointer flex items-center justify-center gap-1.5 ${
+                  authMode === 'LOGIN'
+                    ? 'bg-amber-500 text-slate-950 shadow'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <LogIn className="w-3.5 h-3.5" />
+                <span>Admin Login</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => { setAuthMode('PASSCODE'); setAuthError(null); }}
+                className={`flex-1 py-2 font-bold rounded-lg transition cursor-pointer flex items-center justify-center gap-1.5 ${
+                  authMode === 'PASSCODE'
+                    ? 'bg-amber-500 text-slate-950 shadow'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <KeyRound className="w-3.5 h-3.5" />
+                <span>Stage Passcode</span>
+              </button>
+            </div>
+
+            {authError && (
+              <div className="p-3 rounded-xl bg-red-950/90 border border-red-700 text-red-300 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 text-red-400" />
+                <span>{authError}</span>
+              </div>
+            )}
+
+            {authMode === 'LOGIN' ? (
+              <form onSubmit={handleAdminLogin} className="flex flex-col gap-3.5">
+                <div>
+                  <label className="block text-[11px] font-mono uppercase tracking-wider text-slate-400 font-bold mb-1">
+                    Admin Username:
+                  </label>
+                  <input
+                    type="text"
+                    value={adminUsername}
+                    onChange={(e) => setAdminUsername(e.target.value)}
+                    placeholder="Enter admin username"
+                    autoFocus
+                    required
+                    className="w-full px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono text-xs focus:border-amber-400 focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-mono uppercase tracking-wider text-slate-400 font-bold mb-1">
+                    Admin Password:
+                  </label>
+                  <input
+                    type="password"
+                    value={adminPassword}
+                    onChange={(e) => setAdminPassword(e.target.value)}
+                    placeholder="Enter admin password"
+                    required
+                    className="w-full px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono text-xs focus:border-amber-400 focus:outline-none"
+                  />
+                </div>
+
+                <div className="flex gap-2 justify-end pt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowAdminAuthModal(false);
+                      setAuthError(null);
+                    }}
+                    className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 font-bold text-xs cursor-pointer hover:bg-slate-700 transition"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isLoggingIn}
+                    className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs uppercase cursor-pointer transition shadow disabled:opacity-50"
+                  >
+                    {isLoggingIn ? 'Verifying...' : 'Unlock Authority'}
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <form onSubmit={handleAdminVerify} className="flex flex-col gap-3.5">
+                <div>
+                  <label className="block text-[11px] font-mono uppercase tracking-wider text-slate-400 font-bold mb-1">
+                    Admin Passcode / PIN:
+                  </label>
                   <input
                     type="password"
                     value={adminPasscode}
                     onChange={(e) => setAdminPasscode(e.target.value)}
-                    placeholder="Enter admin passcode"
+                    placeholder="Enter stage admin passcode"
                     autoFocus
-                    className="flex-1 px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono text-sm focus:border-amber-400 focus:outline-none"
+                    required
+                    className="w-full px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono text-xs focus:border-amber-400 focus:outline-none"
                   />
+                </div>
+
+                <div className="flex gap-2 justify-end pt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowAdminAuthModal(false);
+                      setAdminPasscode('');
+                      setAuthError(null);
+                    }}
+                    className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 font-bold text-xs cursor-pointer hover:bg-slate-700 transition"
+                  >
+                    Cancel
+                  </button>
                   <button
                     type="submit"
-                    className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs uppercase cursor-pointer transition shadow"
+                    className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs uppercase cursor-pointer transition shadow"
                   >
                     Unlock
                   </button>
                 </div>
-                {authError && (
-                  <span className="text-xs text-rose-400 mt-1.5 block font-bold">
-                    {authError}
-                  </span>
-                )}
-                <span className="text-[10px] text-slate-500 mt-1 block">
-                  Hint: Default admin passcode is <code>admin</code> or <code>admin123</code>.
-                </span>
-              </div>
-
-              <div className="flex gap-2 justify-end pt-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowAdminAuthModal(false);
-                    setAdminPasscode('');
-                    setAuthError(null);
-                  }}
-                  className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 font-bold text-xs cursor-pointer hover:bg-slate-700 transition"
-                >
-                  Cancel
-                </button>
-              </div>
-            </form>
+              </form>
+            )}
           </div>
         </div>
       )}
+
+      {/* Floating Corner Discord Toast Notifications - Zero Masking of Central Floor */}
+      <AuctionNotificationBanner />
     </div>
   );
 };

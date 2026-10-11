@@ -9,7 +9,7 @@ import { useAuth } from '../context/AuthContext';
 import { useAuction } from '../context/AuctionContext';
 import { CountdownTimer } from '../components/CountdownTimer';
 import { BucketProgressBar } from '../components/BucketProgressBar';
-import { formatAcademicCategory } from '../utils/academicCategories';
+import { formatAcademicCategory, isDiplomaPlayer } from '../utils/academicCategories';
 import {
   Gavel,
   CheckCircle,
@@ -22,7 +22,6 @@ import {
   Phone,
   UserPlus,
   Copy,
-  Trash2,
   Eye,
   X,
   Share2,
@@ -32,10 +31,17 @@ import {
 
 export const FranchiseConsole: React.FC = () => {
   const { user } = useAuth();
-  const { currentLot, franchises, placeBid, passLot, serverTime, removeSquadPlayer, updateCaptainStats, activeSession, sessionState } = useAuction();
+  const { currentLot, franchises, placeBid, passLot, serverTime, updateCaptainStats, activeSession, sessionState } = useAuction();
   const [bidding, setBidding] = useState(false);
+  const [passing, setPassing] = useState(false);
+  const [hasPassed, setHasPassed] = useState(false);
+  const [passedLotIds, setPassedLotIds] = useState<Record<string, boolean>>({});
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
+
+  React.useEffect(() => {
+    setHasPassed(false);
+  }, [currentLot?.id]);
 
   // Referral generator state
   const [generatingReferral, setGeneratingReferral] = useState(false);
@@ -44,9 +50,6 @@ export const FranchiseConsole: React.FC = () => {
 
   // Squad management modal
   const [selectedPlayerDossier, setSelectedPlayerDossier] = useState<any | null>(null);
-  const [removingPlayer, setRemovingPlayer] = useState<any | null>(null);
-  const [removalReason, setRemovalReason] = useState('');
-  const [isRemoving, setIsRemoving] = useState(false);
 
   // Edit Captain Stats Modal
   const [showEditCaptainModal, setShowEditCaptainModal] = useState(false);
@@ -73,7 +76,15 @@ export const FranchiseConsole: React.FC = () => {
   // Squad views tab
   const [squadTab, setSquadTab] = useState<'ACTIVE' | 'REMOVED' | 'REFERRALS'>('ACTIVE');
 
-  const myFranchise = franchises.find((f) => f.id === user?.franchiseId) || franchises[0];
+  const myFranchise =
+    franchises.find(
+      (f) =>
+        f.id === user?.franchiseId ||
+        f.id === user?.id ||
+        f.custom_id?.toLowerCase() === user?.franchiseId?.toLowerCase() ||
+        f.custom_id?.toLowerCase() === user?.username?.toLowerCase() ||
+        f.name?.toLowerCase() === user?.franchiseId?.toLowerCase()
+    ) || franchises[0];
 
   const openCaptainEditor = () => {
     if (!myFranchise) return;
@@ -154,11 +165,43 @@ export const FranchiseConsole: React.FC = () => {
     }
   };
 
+  const isLotPassedOnServer = Boolean(
+    currentLot &&
+    ((currentLot.passed_franchises && myFranchise && currentLot.passed_franchises.includes(myFranchise.id)) ||
+      passedLotIds[currentLot.id])
+  );
+  const isPassed = hasPassed || isLotPassedOnServer;
+
   const handlePass = async () => {
-    if (!myFranchise) return;
+    const targetFranchiseId = myFranchise?.id || user?.franchiseId || franchises[0]?.id;
+    if (!targetFranchiseId || !currentLot || passing || isPassed) return;
+    
+    // Prevent current winning bidder from passing
+    if (isHighestBidder) {
+      setActionError(`You are the leading bidder at ${currentLot.current_price} Pts (Purse). Leading bidder cannot pass.`);
+      return;
+    }
+
+    // Immediately set optimistic lock
+    setHasPassed(true);
     setActionError(null);
     setActionSuccess(null);
-    await passLot(myFranchise.id);
+    setPassing(true);
+    try {
+      const res = await passLot(targetFranchiseId);
+      if (res.success) {
+        setPassedLotIds((prev) => ({ ...prev, [currentLot.id]: true }));
+        setActionSuccess(`You passed on ${currentLot.player_name || 'this lot'}. Bidding locked for this lot.`);
+      } else {
+        setHasPassed(false);
+        setActionError(res.error || 'Failed to pass on current lot.');
+      }
+    } catch (err: any) {
+      setHasPassed(false);
+      setActionError(err.message || 'Pass action failed.');
+    } finally {
+      setPassing(false);
+    }
   };
 
   const handleGenerateReferral = async () => {
@@ -198,31 +241,6 @@ export const FranchiseConsole: React.FC = () => {
     }
   };
 
-  const handleRemoveSquadPlayer = async () => {
-    if (!removingPlayer || !myFranchise) return;
-    setIsRemoving(true);
-    setActionError(null);
-    setActionSuccess(null);
-
-    try {
-      const res = await removeSquadPlayer(
-        myFranchise.id,
-        removingPlayer.player_id || removingPlayer.id,
-        removalReason || 'Removed by Franchise Captain'
-      );
-      if (!res.success) {
-        throw new Error(res.error || 'Failed to remove player.');
-      }
-      setActionSuccess(res.message || 'Player safely removed from squad.');
-      setRemovingPlayer(null);
-      setRemovalReason('');
-    } catch (err: any) {
-      setActionError(err.message || 'Failed to remove player.');
-    } finally {
-      setIsRemoving(false);
-    }
-  };
-
   if (!myFranchise) {
     return (
       <div className="max-w-md mx-auto px-4 py-16 text-center text-slate-400">
@@ -238,7 +256,7 @@ export const FranchiseConsole: React.FC = () => {
   const currentPrice = currentLot?.current_price ?? currentLot?.opening_price ?? 20;
   const nextIncrement = currentPrice < 100 ? 10 : currentPrice < 200 ? 20 : 30;
   const nextLegalBid = currentLot ? (hasBidder ? currentPrice + nextIncrement : currentPrice) : 0;
-  const canBid = currentLot && myFranchise.bidAllowed && !isHighestBidder && !sessionState.endsWith('_ENDED');
+  const canBid = Boolean(currentLot && myFranchise?.bidAllowed && !isHighestBidder && !isPassed && !sessionState.endsWith('_ENDED'));
   const capStats = myFranchise.captain_stats || {};
 
   const referredPlayersList = myFranchise.squad?.filter((p: any) => p.is_referred === 1 || p.acquisition_type === 'DIRECT_ASSIGNMENT' || p.acquisition_type === 'REFERRED') || [];
@@ -286,7 +304,7 @@ export const FranchiseConsole: React.FC = () => {
               Purse Available
             </div>
             <div className="text-3xl font-black text-amber-400 font-display">
-              {myFranchise.purse} <span className="text-xs text-slate-300">Pts (INR)</span>
+              {myFranchise.purse} <span className="text-xs text-slate-300">Pts (Purse)</span>
             </div>
             <div className="text-[10px] text-emerald-400 font-semibold mt-0.5">
               Squad: {myFranchise.squadCount || 0} / 22 Players
@@ -473,12 +491,18 @@ export const FranchiseConsole: React.FC = () => {
               <p className="text-xs text-cyan-400 font-semibold truncate">
                 {currentLot.branch} • {currentLot.program}
               </p>
+              {isDiplomaPlayer(currentLot) && (
+                <div className="mt-1 px-2.5 py-0.5 rounded-lg bg-rose-950 text-rose-300 border border-rose-500/80 font-bold text-[10px] uppercase inline-flex items-center gap-1 shadow">
+                  <AlertTriangle className="w-3 h-3 text-rose-400 shrink-0" />
+                  <span>Player detained by 1 year diploma</span>
+                </div>
+              )}
               <p className="text-xs text-slate-300 mt-0.5">
                 {currentLot.player_type || currentLot.playerType}
               </p>
               <div className="mt-2 text-xs font-mono">
-                <span className="text-slate-400">Opening Base: </span>
-                <span className="text-white font-bold">{currentLot.opening_price || currentLot.basePrice} Pts (₹)</span>
+                <span className="text-slate-400">Opening Base Price: </span>
+                <span className="text-white font-bold">{currentLot.opening_price || currentLot.basePrice} Pts (Purse)</span>
               </div>
             </div>
           </div>
@@ -487,7 +511,7 @@ export const FranchiseConsole: React.FC = () => {
             <div>
               <div className="text-[10px] text-slate-400 uppercase font-bold font-mono">Current Highest Bid</div>
               <div className="text-3xl font-black text-amber-400 font-display">
-                {currentLot.current_price || currentLot.opening_price} Pts (₹)
+                {currentLot.current_price || currentLot.opening_price} Pts (Purse)
               </div>
             </div>
 
@@ -507,10 +531,18 @@ export const FranchiseConsole: React.FC = () => {
 
           <div className="grid grid-cols-2 gap-3 pt-2">
             <button
+              type="button"
+              disabled={hasPassed || bidding || !currentLot}
               onClick={handlePass}
-              className="py-4 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-sm uppercase tracking-wider transition cursor-pointer"
+              className={`py-4 rounded-2xl font-bold text-sm uppercase tracking-wider transition ${
+                hasPassed
+                  ? 'bg-slate-900 text-slate-600 cursor-not-allowed border border-slate-800'
+                  : isHighestBidder
+                  ? 'bg-slate-900/60 border border-slate-800 text-slate-500 cursor-not-allowed'
+                  : 'bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700/60 shadow-md cursor-pointer active:scale-95'
+              }`}
             >
-              Pass
+              {hasPassed ? 'Passed Lot' : 'Pass'}
             </button>
 
             <button
@@ -523,7 +555,7 @@ export const FranchiseConsole: React.FC = () => {
               }`}
             >
               <Gavel className="w-5 h-5" />
-              {isHighestBidder ? 'Winning Bid' : `Bid ${nextLegalBid} Pts (₹)`}
+              {isPassed ? 'Passed (Bidding Locked)' : isHighestBidder ? 'Winning Bid' : `Bid ${nextLegalBid} Pts (Purse)`}
             </button>
           </div>
         </div>
@@ -555,7 +587,7 @@ export const FranchiseConsole: React.FC = () => {
               Captain Squad Management ({myFranchise.squadCount || 0} / 22)
             </h3>
             <p className="text-xs text-slate-400">
-              Manage your squad. You can safely remove permitted players without deleting their records.
+              Manage your squad and view acquired players.
             </p>
           </div>
 
@@ -619,6 +651,12 @@ export const FranchiseConsole: React.FC = () => {
                       </div>
                       <div className="text-[11px] text-slate-400 mt-0.5 flex flex-wrap items-center gap-1.5">
                         <span className="font-mono text-amber-400 font-bold">{formatAcademicCategory(m.bucket)}</span>
+                        {isDiplomaPlayer(m) && (
+                          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-rose-950 text-rose-300 border border-rose-700 inline-flex items-center gap-1">
+                            <AlertTriangle className="w-2.5 h-2.5 text-rose-400" />
+                            <span>Player detained by 1 year diploma</span>
+                          </span>
+                        )}
                         <span>•</span>
                         <span>{m.player_type || 'Player'}</span>
                       </div>
@@ -627,22 +665,9 @@ export const FranchiseConsole: React.FC = () => {
 
                   <div className="text-right shrink-0">
                     <span className="font-mono text-amber-400 font-black text-sm">
-                      {m.acquisition_type === 'DIRECT_ASSIGNMENT' ? '0 Pts (Direct Assignment)' : `${m.price} Pts (₹)`}
+                      {m.acquisition_type === 'DIRECT_ASSIGNMENT' ? '0 Pts (Direct Assignment)' : `${m.price} Pts (Purse)`}
                     </span>
                   </div>
-                </div>
-
-                <div className="pt-2 border-t border-slate-900 flex items-center justify-between">
-                  <button
-                    onClick={() => {
-                      setRemovingPlayer(m);
-                      setRemovalReason('');
-                    }}
-                    className="px-2.5 py-1 rounded-lg bg-rose-600/20 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-500/30 font-bold text-[11px] flex items-center gap-1 transition cursor-pointer"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    <span>Remove from Squad</span>
-                  </button>
                 </div>
               </div>
             ))}
@@ -847,42 +872,6 @@ export const FranchiseConsole: React.FC = () => {
                 </button>
               </div>
             </form>
-          </div>
-        </div>
-      )}
-
-      {/* REMOVE SQUAD MODAL */}
-      {removingPlayer && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
-          <div className="w-full max-w-md bg-slate-900 border-2 border-rose-600 rounded-3xl p-6 shadow-2xl flex flex-col gap-4">
-            <h3 className="font-heading text-xl font-bold text-white text-center">
-              Remove Player from Squad?
-            </h3>
-            <p className="text-xs text-slate-300 text-center">
-              Are you sure you want to remove <strong className="text-white">"{removingPlayer.player_name}"</strong> from your squad?
-            </p>
-            <textarea
-              value={removalReason}
-              onChange={(e) => setRemovalReason(e.target.value)}
-              placeholder="Specify reason for squad status update..."
-              rows={2}
-              className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs"
-            />
-            <div className="flex gap-3 mt-2">
-              <button
-                onClick={() => setRemovingPlayer(null)}
-                className="flex-1 py-2.5 rounded-xl bg-slate-800 text-slate-300 font-bold text-xs"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleRemoveSquadPlayer}
-                disabled={isRemoving}
-                className="flex-1 py-2.5 rounded-xl bg-rose-600 text-white font-bold text-xs"
-              >
-                {isRemoving ? 'Removing...' : 'Confirm Remove'}
-              </button>
-            </div>
           </div>
         </div>
       )}

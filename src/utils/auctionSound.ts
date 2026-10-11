@@ -128,6 +128,10 @@ class AuctionSoundEngine {
     } catch {}
   }
 
+  public playClick() {
+    this.playTimerBeep(false);
+  }
+
   public playSoldCelebration() {
     const ctx = this.getContext();
     if (!ctx) return;

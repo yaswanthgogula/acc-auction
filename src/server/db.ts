@@ -11,6 +11,7 @@ import fs from 'fs';
 import path from 'path';
 import initSqlJs, { Database } from 'sql.js';
 import bcrypt from 'bcryptjs';
+import { Pool, PoolClient } from 'pg';
 import {
   initCloudSql,
   loadCloudSqlData,
@@ -22,6 +23,16 @@ import {
   saveFranchiseToCloudSql,
   saveUserToCloudSql,
 } from './cloudsql-sync';
+
+// Initialize PostgreSQL Pool using process.env.DATABASE_URL with SSL
+export const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+});
+
+pool.on('error', (err) => {
+  console.warn('[Supabase PostgreSQL Pool] Client pool error:', err.message);
+});
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'acc_auction.sqlite');
@@ -79,7 +90,7 @@ export async function initDatabase(): Promise<Database> {
     'ALTER TABLE franchises ADD COLUMN matches_won INTEGER DEFAULT 0;',
     'ALTER TABLE franchises ADD COLUMN matches_lost INTEGER DEFAULT 0;',
     'ALTER TABLE franchises ADD COLUMN titles_won INTEGER DEFAULT 0;',
-    'ALTER TABLE franchises ADD COLUMN win_percentage TEXT DEFAULT "0%";',
+    'ALTER TABLE franchises ADD COLUMN win_percentage TEXT DEFAULT \'0%\';',
     'ALTER TABLE franchises ADD COLUMN franchise_stats_json TEXT;',
     'ALTER TABLE players ADD COLUMN batting_style TEXT;',
     'ALTER TABLE players ADD COLUMN bowling_style TEXT;',
@@ -93,20 +104,20 @@ export async function initDatabase(): Promise<Database> {
     'ALTER TABLE players ADD COLUMN referred_by_captain_name TEXT;',
     'ALTER TABLE players ADD COLUMN referring_franchise_id TEXT;',
     'ALTER TABLE players ADD COLUMN referring_franchise_name TEXT;',
-    'ALTER TABLE players ADD COLUMN referral_status TEXT DEFAULT "NONE";',
+    'ALTER TABLE players ADD COLUMN referral_status TEXT DEFAULT \'NONE\';',
     'ALTER TABLE players ADD COLUMN referral_verified_at INTEGER;',
     'ALTER TABLE players ADD COLUMN referral_verified_by TEXT;',
     'ALTER TABLE players ADD COLUMN is_detained INTEGER DEFAULT 0;',
     'ALTER TABLE players ADD COLUMN registration_phase INTEGER DEFAULT 1;',
-    'ALTER TABLE players ADD COLUMN approval_status TEXT DEFAULT "PENDING";',
+    'ALTER TABLE players ADD COLUMN approval_status TEXT DEFAULT \'PENDING\';',
     'ALTER TABLE players ADD COLUMN rejection_reason TEXT;',
     'ALTER TABLE players ADD COLUMN auction_session INTEGER DEFAULT 1;',
     'ALTER TABLE players ADD COLUMN random_identifier TEXT;',
     'ALTER TABLE editions ADD COLUMN active_session INTEGER DEFAULT 1;',
-    'ALTER TABLE editions ADD COLUMN session_state TEXT DEFAULT "SESSION_1_ACTIVE";',
+    'ALTER TABLE editions ADD COLUMN session_state TEXT DEFAULT \'SESSION_1_ACTIVE\';',
     'ALTER TABLE auction_lots ADD COLUMN random_identifier TEXT;',
     'ALTER TABLE auction_lots ADD COLUMN auction_session INTEGER DEFAULT 1;',
-    'ALTER TABLE squad_members ADD COLUMN status TEXT DEFAULT "ACTIVE";',
+    'ALTER TABLE squad_members ADD COLUMN status TEXT DEFAULT \'ACTIVE\';',
     'ALTER TABLE squad_members ADD COLUMN removed_at INTEGER;',
     'ALTER TABLE squad_members ADD COLUMN removed_by TEXT;',
     'ALTER TABLE squad_members ADD COLUMN removal_reason TEXT;',
@@ -607,49 +618,173 @@ async function bootstrapSuperAdmin(db: Database) {
   }
 }
 
-export function queryAll<T = any>(sql: string, params: any[] = []): T[] {
-  if (!db) throw new Error('Database not initialized');
-  const stmt = db.prepare(sql);
-  stmt.bind(params);
-  const rows: T[] = [];
-  while (stmt.step()) {
-    rows.push(stmt.getAsObject() as T);
+/**
+ * Adapts SQLite parameter placeholders ('?') to PostgreSQL parameter syntax ('$1', '$2', ...)
+ */
+export function convertSqlitePlaceholdersToPg(sql: string): string {
+  let paramIndex = 1;
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let result = '';
+  for (let i = 0; i < sql.length; i++) {
+    const char = sql[i];
+    if (char === "'" && (i === 0 || sql[i - 1] !== '\\')) {
+      inSingleQuote = !inSingleQuote;
+      result += char;
+    } else if (char === '"' && (i === 0 || sql[i - 1] !== '\\')) {
+      inDoubleQuote = !inDoubleQuote;
+      result += char;
+    } else if (char === '?' && !inSingleQuote && !inDoubleQuote) {
+      result += `$${paramIndex++}`;
+    } else {
+      result += char;
+    }
   }
-  stmt.free();
-  return rows;
+  return result;
+}
+
+export function queryAll<T = any>(sql: string, params: any[] = []): T[] {
+  const pgSql = convertSqlitePlaceholdersToPg(sql);
+
+  // Execute against PostgreSQL Pool using process.env.DATABASE_URL
+  const pgPromise = process.env.DATABASE_URL
+    ? pool.query(pgSql, params).then((res) => res.rows as T[]).catch((err) => {
+        console.warn('[Supabase PostgreSQL queryAll error]:', err.message);
+        return [] as T[];
+      })
+    : Promise.resolve([] as T[]);
+
+  if (db) {
+    try {
+      const stmt = db.prepare(sql);
+      stmt.bind(params);
+      const rows: T[] = [];
+      while (stmt.step()) {
+        rows.push(stmt.getAsObject() as T);
+      }
+      stmt.free();
+      return rows;
+    } catch {
+      return pgPromise as any;
+    }
+  }
+
+  return pgPromise as any;
 }
 
 export function queryOne<T = any>(sql: string, params: any[] = []): T | null {
-  const rows = queryAll<T>(sql, params);
-  return rows.length > 0 ? rows[0] : null;
+  const pgSql = convertSqlitePlaceholdersToPg(sql);
+
+  // Execute against PostgreSQL Pool using process.env.DATABASE_URL
+  const pgPromise = process.env.DATABASE_URL
+    ? pool.query(pgSql, params).then((res) => ((res.rows[0] as T) || null)).catch((err) => {
+        console.warn('[Supabase PostgreSQL queryOne error]:', err.message);
+        return null;
+      })
+    : Promise.resolve(null);
+
+  if (db) {
+    try {
+      const stmt = db.prepare(sql);
+      stmt.bind(params);
+      let row: T | null = null;
+      if (stmt.step()) {
+        row = stmt.getAsObject() as T;
+      }
+      stmt.free();
+      return row;
+    } catch {
+      return pgPromise as any;
+    }
+  }
+
+  return pgPromise as any;
 }
 
 let inTransaction = false;
 
-export function execute(sql: string, params: any[] = []): void {
-  if (!db) throw new Error('Database not initialized');
-  db.run(sql, params);
-  if (!inTransaction) {
-    saveDatabaseToDisk();
+export function execute(sql: string, params: any[] = []): any {
+  const pgSql = convertSqlitePlaceholdersToPg(sql);
+
+  // Execute against PostgreSQL Pool using process.env.DATABASE_URL
+  const pgPromise = process.env.DATABASE_URL
+    ? pool.query(pgSql, params).catch((err) => {
+        console.warn('[Supabase PostgreSQL execute error]:', err.message);
+      })
+    : Promise.resolve();
+
+  if (db) {
+    try {
+      db.run(sql, params);
+      if (!inTransaction) {
+        saveDatabaseToDisk();
+      }
+    } catch (err) {
+      console.warn('[SQLite execute warning]:', err);
+    }
   }
+
+  return pgPromise;
 }
 
-export function executeTransaction(fn: () => void): void {
-  if (!db) throw new Error('Database not initialized');
-  inTransaction = true;
-  db.run('BEGIN TRANSACTION;');
-  try {
-    fn();
-    db.run('COMMIT;');
-    inTransaction = false;
-    saveDatabaseToDisk();
-  } catch (err) {
+export function executeTransaction<T = any>(fn: (client?: PoolClient) => void | Promise<void>): any {
+  let sqliteErr: any = null;
+  if (db) {
+    inTransaction = true;
+    db.run('BEGIN TRANSACTION;');
     try {
-      db.run('ROLLBACK;');
-    } catch {}
-    inTransaction = false;
-    throw err;
+      fn();
+      db.run('COMMIT;');
+      inTransaction = false;
+      saveDatabaseToDisk();
+    } catch (err) {
+      try {
+        db.run('ROLLBACK;');
+      } catch {}
+      inTransaction = false;
+      sqliteErr = err;
+    }
   }
+
+  // Execute against PostgreSQL Pool transaction
+  const pgPromise = process.env.DATABASE_URL
+    ? pool.connect().then(async (client) => {
+        try {
+          await client.query('BEGIN');
+          await fn(client);
+          await client.query('COMMIT');
+        } catch (err) {
+          await client.query('ROLLBACK');
+          throw err;
+        } finally {
+          client.release();
+        }
+      }).catch((err) => {
+        console.warn('[Supabase PostgreSQL executeTransaction error]:', err.message);
+      })
+    : Promise.resolve();
+
+  if (sqliteErr) {
+    throw sqliteErr;
+  }
+
+  return pgPromise;
+}
+
+export async function queryAllAsync<T = any>(sql: string, params: any[] = []): Promise<T[]> {
+  const pgSql = convertSqlitePlaceholdersToPg(sql);
+  const res = await pool.query(pgSql, params);
+  return res.rows as T[];
+}
+
+export async function queryOneAsync<T = any>(sql: string, params: any[] = []): Promise<T | null> {
+  const rows = await queryAllAsync<T>(sql, params);
+  return rows.length > 0 ? rows[0] : null;
+}
+
+export async function executeAsync(sql: string, params: any[] = []): Promise<any> {
+  const pgSql = convertSqlitePlaceholdersToPg(sql);
+  return await pool.query(pgSql, params);
 }
 
 export async function resetSystemData(actorUsername: string = 'SuperAdmin'): Promise<void> {
@@ -740,10 +875,10 @@ export function deleteSingleFranchise(franchiseId: string, actorUsername: string
 
   const now = Date.now();
   executeTransaction(() => {
-    execute('UPDATE players SET referring_franchise_id = NULL, is_referred = 0, referral_token = NULL, referral_status = "NONE" WHERE referring_franchise_id = ?', [franchiseId]);
+    execute('UPDATE players SET referring_franchise_id = NULL, is_referred = 0, referral_token = NULL, referral_status = \'NONE\' WHERE referring_franchise_id = ?', [franchiseId]);
     execute('DELETE FROM referral_tokens WHERE franchise_id = ?', [franchiseId]);
     execute('DELETE FROM referrals WHERE franchise_id = ?', [franchiseId]);
-    execute("UPDATE players SET registration_status = 'REGISTERED', is_auction_eligible = CASE WHEN approval_status = 'APPROVED' THEN 1 ELSE is_auction_eligible END WHERE id IN (SELECT player_id FROM squad_members WHERE franchise_id = ?)", [franchiseId]);
+    execute("UPDATE players SET registration_status = 'REGISTERED' WHERE id IN (SELECT player_id FROM squad_members WHERE franchise_id = ?)", [franchiseId]);
     execute('DELETE FROM bids WHERE franchise_id = ?', [franchiseId]);
     execute('DELETE FROM sales WHERE franchise_id = ?', [franchiseId]);
     execute('DELETE FROM squad_members WHERE franchise_id = ?', [franchiseId]);

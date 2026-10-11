@@ -141,7 +141,7 @@ export async function validatePlayerProfilePicture(
         const avgCenterBrightness = centerBrightnessSum / Math.max(1, centerPixelCount);
 
         // Check if image is completely pitch black or completely white/blank
-        if (avgCenterBrightness < 15) {
+        if (avgCenterBrightness < 8) {
           resolve({
             valid: false,
             error: 'The photo appears too dark or unlit. Please upload a clear photo with adequate lighting on your face.',
@@ -149,7 +149,7 @@ export async function validatePlayerProfilePicture(
           return;
         }
 
-        if (avgCenterBrightness > 248 && centerMax - centerMin < 12) {
+        if (avgCenterBrightness > 252 && centerMax - centerMin < 8) {
           resolve({
             valid: false,
             error: 'The image appears blank or overexposed. Please provide a clear, visible player photograph.',
@@ -159,7 +159,7 @@ export async function validatePlayerProfilePicture(
 
         // Contrast check in face region: A face contains hair, skin, eyes, with variation
         const centerDynamicRange = centerMax - centerMin;
-        if (centerDynamicRange < 20) {
+        if (centerDynamicRange < 10) {
           resolve({
             valid: false,
             error: 'No distinct facial features detected in the center. Please upload a clear headshot photo.',

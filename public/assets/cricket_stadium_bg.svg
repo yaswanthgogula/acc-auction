@@ -91,6 +91,7 @@
 
   <!-- Stadium Tier 3 (Upper Grandstands & Crowd Lights) -->
   <path d="M 0,340 Q 960,190 1920,340 L 1920,440 Q 960,310 0,440 Z" fill="#070d1d" />
+  <!-- Distant Crowd Light Texture / Camera Flashes -->
   <g opacity="0.35">
     <circle cx="240" cy="320" r="2.5" fill="#ffffff" />
     <circle cx="380" cy="310" r="2" fill="#fde047" />
@@ -106,6 +107,7 @@
 
   <!-- Stadium Tier 2 (Middle Deck & Executive Boxes) -->
   <path d="M 0,430 Q 960,300 1920,430 L 1920,530 Q 960,420 0,530 Z" fill="#040914" />
+  <!-- VIP Hospitality Glass Windows Glowing Warm Gold -->
   <path d="M 280,410 Q 960,320 1640,410" stroke="#fbbf24" stroke-width="3" opacity="0.45" stroke-dasharray="25,12" fill="none" />
 
   <!-- LED Perimeter Display Ribbon Ribbon -->

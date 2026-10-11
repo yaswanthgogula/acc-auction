@@ -127,19 +127,19 @@ export const CountdownTimer: React.FC<CountdownTimerProps> = ({
       ⏸️ AUCTION PAUSED
     </span>
   ) : isExpired ? (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-600/40 text-red-200 border border-red-500 text-[10px] sm:text-xs font-black uppercase tracking-wider animate-bounce">
+    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-red-600/40 text-red-200 border border-red-500 text-[10px] sm:text-xs font-black uppercase tracking-wider animate-bounce">
       <AlertCircle className="w-3 h-3" /> Time Expired • Hammer Ready
     </span>
   ) : isGoingTwice ? (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-600/30 text-red-300 border border-red-500/50 text-[10px] sm:text-xs font-bold uppercase tracking-wider">
+    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-red-600/30 text-red-300 border border-red-500/50 text-[10px] sm:text-xs font-bold uppercase tracking-wider">
       Going Twice • Final Call
     </span>
   ) : isGoingOnce ? (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-600/30 text-amber-300 border border-amber-500/50 text-[10px] sm:text-xs font-bold uppercase tracking-wider">
+    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-600/30 text-amber-300 border border-amber-500/50 text-[10px] sm:text-xs font-bold uppercase tracking-wider">
       Going Once
     </span>
   ) : (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-600/30 text-emerald-300 border border-emerald-500/50 text-[10px] sm:text-xs font-bold uppercase tracking-wider">
+    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-600/30 text-emerald-300 border border-emerald-500/50 text-[10px] sm:text-xs font-bold uppercase tracking-wider">
       Active Bidding
     </span>
   );

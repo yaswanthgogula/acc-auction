@@ -13,7 +13,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { parseAvanthiRollNumber } from '../engine/acc-combined-engines';
 import { PhotoCaptureModal } from '../components/PhotoCaptureModal';
-import { formatAcademicCategory, deriveEffectiveBucket } from '../utils/academicCategories';
+import { formatAcademicCategory, deriveEffectiveBucket, isDiplomaPlayer } from '../utils/academicCategories';
 import { validatePlayerProfilePicture } from '../utils/imageValidation';
 import { mobileNotification } from '../utils/mobileNotification';
 import {
@@ -36,6 +36,7 @@ import {
   KeyRound,
   ArrowRight,
   X,
+  Crop,
 } from 'lucide-react';
 
 interface PlayerRegisterProps {
@@ -109,6 +110,8 @@ export const PlayerRegister: React.FC<PlayerRegisterProps> = ({ onNavigate, onOp
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [showCameraModal, setShowCameraModal] = useState(false);
+  const [cropModalInitialImage, setCropModalInitialImage] = useState<string | null>(null);
+  const [cropModalMode, setCropModalMode] = useState<'CAMERA' | 'CROP' | 'CHOICE'>('CAMERA');
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successInfo, setSuccessInfo] = useState<any | null>(null);
@@ -152,45 +155,21 @@ export const PlayerRegister: React.FC<PlayerRegisterProps> = ({ onNavigate, onOp
     if (!file) return;
 
     setErrorMsg(null);
-    const validation = await validatePlayerProfilePicture(file);
-    if (!validation.valid) {
-      setErrorMsg(validation.error || 'Photo did not meet tournament regulations.');
+    const validMimes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+    if (file.type && !validMimes.includes(file.type.toLowerCase())) {
+      setErrorMsg('Please select a valid JPEG, PNG, or WebP photo.');
       return;
     }
 
     const reader = new FileReader();
-    reader.onload = () => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        const maxDim = 400;
-        let width = img.width;
-        let height = img.height;
-        if (width > height) {
-          if (width > maxDim) {
-            height = Math.round((height * maxDim) / width);
-            width = maxDim;
-          }
-        } else {
-          if (height > maxDim) {
-            width = Math.round((width * maxDim) / height);
-            height = maxDim;
-          }
-        }
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(img, 0, 0, width, height);
-          const compressed = canvas.toDataURL('image/jpeg', 0.82);
-          setPhotoUrl(compressed);
-        } else {
-          setPhotoUrl(reader.result as string);
-        }
-      };
-      img.src = reader.result as string;
+    reader.onload = (event) => {
+      const dataUrl = event.target?.result as string;
+      setCropModalInitialImage(dataUrl);
+      setCropModalMode('CROP');
+      setShowCameraModal(true);
     };
     reader.readAsDataURL(file);
+    e.target.value = '';
   };
 
   const isBattingRelated = playerType === 'BATSMAN' || playerType === 'ALL_ROUNDER' || playerType === 'WICKET_KEEPER';
@@ -631,6 +610,12 @@ export const PlayerRegister: React.FC<PlayerRegisterProps> = ({ onNavigate, onOp
                         </span>
                       )}
                     </div>
+                    {isDiplomaPlayer(parsedInfo) && (
+                      <div className="mt-2 p-2.5 rounded-xl bg-rose-950/80 border border-rose-500/80 text-rose-200 text-xs font-bold font-mono uppercase flex items-center gap-2">
+                        <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                        <span>Player detained by 1 year diploma</span>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -653,7 +638,7 @@ export const PlayerRegister: React.FC<PlayerRegisterProps> = ({ onNavigate, onOp
                     type={showPassword ? 'text' : 'password'}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    placeholder="Password"
+                    placeholder="Min 4 characters"
                     className="w-full px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono text-sm placeholder-slate-600 focus:outline-none focus:border-blue-500 transition pr-10"
                     required
                   />
@@ -673,7 +658,7 @@ export const PlayerRegister: React.FC<PlayerRegisterProps> = ({ onNavigate, onOp
                   type={showPassword ? 'text' : 'password'}
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
-                  placeholder="Password"
+                  placeholder="Re-enter password"
                   className="w-full px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono text-sm placeholder-slate-600 focus:outline-none focus:border-blue-500 transition"
                   required
                 />
@@ -735,19 +720,27 @@ export const PlayerRegister: React.FC<PlayerRegisterProps> = ({ onNavigate, onOp
               </div>
 
               {parsedInfo && (
-                <div className="pt-2 border-t border-slate-900 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs font-mono">
-                  <div className="flex items-center gap-2">
-                    <span className="text-slate-400">Effective Auction Bucket:</span>
-                    <span className="px-3 py-1 rounded bg-amber-500 text-slate-950 font-black text-xs">
-                      {parsedInfo.academicCategoryLabel}
-                    </span>
+                <>
+                  <div className="pt-2 border-t border-slate-900 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs font-mono">
+                    <div className="flex items-center gap-2">
+                      <span className="text-slate-400">Effective Auction Bucket:</span>
+                      <span className="px-3 py-1 rounded bg-amber-500 text-slate-950 font-black text-xs">
+                        {parsedInfo.academicCategoryLabel}
+                      </span>
+                    </div>
+                    {isDetained && parsedInfo.originalLabel && (
+                      <span className="text-amber-400 text-[11px] font-bold">
+                        ⚠️ Deduced to lower bucket by 1 ({parsedInfo.originalLabel} ➔ {parsedInfo.academicCategoryLabel})
+                      </span>
+                    )}
                   </div>
-                  {isDetained && parsedInfo.originalLabel && (
-                    <span className="text-amber-400 text-[11px] font-bold">
-                      ⚠️ Deduced to lower bucket by 1 ({parsedInfo.originalLabel} ➔ {parsedInfo.academicCategoryLabel})
-                    </span>
+                  {isDiplomaPlayer(parsedInfo) && (
+                    <div className="mt-2 p-2.5 rounded-xl bg-rose-950/80 border border-rose-500/80 text-rose-200 text-xs font-bold font-mono uppercase flex items-center gap-2">
+                      <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                      <span>Player detained by 1 year diploma</span>
+                    </div>
                   )}
-                </div>
+                </>
               )}
             </div>
           </div>
@@ -771,7 +764,11 @@ export const PlayerRegister: React.FC<PlayerRegisterProps> = ({ onNavigate, onOp
                 <div className="flex flex-wrap items-center gap-2.5">
                   <button
                     type="button"
-                    onClick={() => setShowCameraModal(true)}
+                    onClick={() => {
+                      setCropModalInitialImage(null);
+                      setCropModalMode('CAMERA');
+                      setShowCameraModal(true);
+                    }}
                     className="px-4 py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs flex items-center gap-1.5 transition cursor-pointer"
                   >
                     <Camera className="w-4 h-4" />
@@ -786,6 +783,21 @@ export const PlayerRegister: React.FC<PlayerRegisterProps> = ({ onNavigate, onOp
                     <Upload className="w-4 h-4" />
                     Upload from Gallery
                   </button>
+
+                  {photoUrl && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCropModalInitialImage(photoUrl);
+                        setCropModalMode('CROP');
+                        setShowCameraModal(true);
+                      }}
+                      className="px-3.5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center gap-1.5 transition cursor-pointer shadow-md"
+                    >
+                      <Crop className="w-4 h-4" />
+                      Crop / Adjust Photo
+                    </button>
+                  )}
 
                   <input
                     ref={fileInputRef}
@@ -911,7 +923,7 @@ export const PlayerRegister: React.FC<PlayerRegisterProps> = ({ onNavigate, onOp
                         basePrice === val ? 'bg-amber-500 text-slate-950 border-amber-400' : 'bg-slate-900 text-slate-300 border-slate-800'
                       }`}
                     >
-                      {val ? `${val} Pts (₹)` : 'Leave Empty'}
+                      {val ? `${val} Pts (Purse)` : 'Leave Empty (20 Pts Default)'}
                     </button>
                   ))}
                 </div>
@@ -1011,10 +1023,16 @@ export const PlayerRegister: React.FC<PlayerRegisterProps> = ({ onNavigate, onOp
 
       <PhotoCaptureModal
         isOpen={showCameraModal}
-        onClose={() => setShowCameraModal(false)}
+        initialImage={cropModalInitialImage}
+        initialMode={cropModalMode}
+        onClose={() => {
+          setShowCameraModal(false);
+          setCropModalInitialImage(null);
+        }}
         onPhotoSelected={(imgData: string) => {
           setPhotoUrl(imgData);
           setShowCameraModal(false);
+          setCropModalInitialImage(null);
           setErrorMsg(null);
         }}
       />

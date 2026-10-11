@@ -15,7 +15,7 @@ import { useAuth } from '../context/AuthContext';
 import { useAuction } from '../context/AuctionContext';
 import { CountdownTimer } from '../components/CountdownTimer';
 import { PhotoCaptureModal } from '../components/PhotoCaptureModal';
-import { formatAcademicCategory } from '../utils/academicCategories';
+import { formatAcademicCategory, isDiplomaPlayer } from '../utils/academicCategories';
 import {
   User,
   CheckCircle,
@@ -286,7 +286,7 @@ export const PlayerDashboard: React.FC<{ onNavigate: (route: string) => void }> 
             <div>
               <span className="text-[10px] uppercase font-bold text-slate-400">Current Highest Bid</span>
               <div className="text-3xl font-black text-amber-400 font-mono mt-1">
-                {currentLot.current_price} Pts (₹)
+                {currentLot.current_price} Pts (Purse)
               </div>
             </div>
 
@@ -334,8 +334,14 @@ export const PlayerDashboard: React.FC<{ onNavigate: (route: string) => void }> 
                 ★ Franchise Referred
               </span>
             )}
+            {isDiplomaPlayer(player) && (
+              <span className="px-2.5 py-0.5 rounded-lg bg-rose-500/20 text-rose-300 font-mono font-bold text-xs border border-rose-500/60 inline-flex items-center gap-1">
+                <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
+                <span>Player detained by 1 year diploma</span>
+              </span>
+            )}
             {/* Requirement 3: Detained status badge */}
-            {player.is_detained === 1 && (
+            {player.is_detained === 1 && !isDiplomaPlayer(player) && (
               <span className="px-2.5 py-0.5 rounded-lg bg-rose-500/20 text-rose-300 font-mono font-bold text-xs border border-rose-500/40">
                 Detained (Year Shifted)
               </span>
@@ -394,7 +400,7 @@ export const PlayerDashboard: React.FC<{ onNavigate: (route: string) => void }> 
           <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800">
             <div className="text-[10px] uppercase font-bold text-slate-400">Base Price</div>
             <div className="text-2xl font-black text-amber-400 font-mono mt-1">
-              {isReferred ? 'N/A (Referred)' : player.base_price ? `${player.base_price} Pts (₹)` : 'Optional'}
+              {isReferred ? 'N/A (Referred)' : player.base_price ? `${player.base_price} Pts (Purse)` : '20 Pts (Purse)'}
             </div>
             <span className="text-[10px] text-slate-500 mt-0.5 block">Official Tournament Base</span>
           </div>
@@ -433,8 +439,10 @@ export const PlayerDashboard: React.FC<{ onNavigate: (route: string) => void }> 
 
           <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800">
             <div className="text-[10px] uppercase font-bold text-slate-400">Detained Status</div>
-            <div className="text-base font-bold text-white mt-1">
-              {player.is_detained === 1 ? (
+            <div className="text-sm font-bold text-white mt-1">
+              {isDiplomaPlayer(player) ? (
+                <span className="text-rose-400">Player detained by 1 year diploma</span>
+              ) : player.is_detained === 1 ? (
                 <span className="text-rose-400">YES (Shifted)</span>
               ) : (
                 <span className="text-slate-300">NO (Regular)</span>
@@ -462,7 +470,7 @@ export const PlayerDashboard: React.FC<{ onNavigate: (route: string) => void }> 
             <div className="text-center sm:text-right font-mono">
               <span className="text-[10px] text-emerald-400 uppercase font-bold">Winning Bid / Assignment</span>
               <div className="text-3xl font-black text-amber-400 mt-0.5">
-                {isReferred ? '0 Pts (Direct Assignment)' : `${player.sold_price || player.base_price || 20} Pts (₹)`}
+                {isReferred ? '0 Pts (Direct Assignment)' : `${player.sold_price || player.base_price || 20} Pts (Purse)`}
               </div>
             </div>
           </div>

@@ -15,8 +15,9 @@
 
 import React, { useState, useEffect } from 'react';
 import { useAuction } from '../context/AuctionContext';
-import { Sparkles, Search, Gavel, X, AlertTriangle, Shield, Shuffle } from 'lucide-react';
-import { formatAcademicCategory } from '../utils/academicCategories';
+import { useAuth } from '../context/AuthContext';
+import { Sparkles, Search, Gavel, X, AlertTriangle, Shield, Shuffle, Lock } from 'lucide-react';
+import { formatAcademicCategory, isDiplomaPlayer } from '../utils/academicCategories';
 
 interface GuestDrawModalProps {
   isOpen: boolean;
@@ -29,6 +30,8 @@ export const GuestDrawModal: React.FC<GuestDrawModalProps> = ({
   onClose,
   onPlayerSelected,
 }) => {
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'SUPER_ADMIN' || user?.role === 'ADMIN' || localStorage.getItem('acc_projector_admin') === 'true';
   const { drawNextPlayer } = useAuction();
   const [candidates, setCandidates] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -47,8 +50,6 @@ export const GuestDrawModal: React.FC<GuestDrawModalProps> = ({
     setLoading(true);
     setErrorMsg(null);
     try {
-      // In Guest Mode, this server endpoint returns strictly masked random identifiers (e.g. A4827)
-      // with zero personal identifying details (no name, no roll, no photo, no referral).
       const res = await fetch('/api/auction/guest-draw-candidates');
       const data = await res.json();
       if (data.success && Array.isArray(data.candidates)) {
@@ -67,10 +68,11 @@ export const GuestDrawModal: React.FC<GuestDrawModalProps> = ({
     setDrawing(true);
     setErrorMsg(null);
     try {
-      // Send random identifier or draw candidate id to backend
+      // In Guest Draw mode, automatic auction functionality is strictly disabled.
+      // Guests can only select a single player to send directly to the bidding floor.
       const res = await drawNextPlayer('GUEST', candidate.id || candidate.random_identifier);
       if (!res.success) {
-        throw new Error(res.error || 'Failed to call player onto auction floor.');
+        throw new Error(res.error || 'Failed to send player to the bidding floor.');
       }
       if (onPlayerSelected) {
         onPlayerSelected(res.lot);
@@ -125,6 +127,7 @@ export const GuestDrawModal: React.FC<GuestDrawModalProps> = ({
             Eligible Lots: <strong className="text-amber-400 text-sm">{candidates.length}</strong>
           </div>
         </div>
+
 
         {errorMsg && (
           <div className="p-3.5 rounded-xl bg-red-950/80 border border-red-700 text-red-300 text-xs flex items-center gap-2">
@@ -182,8 +185,10 @@ export const GuestDrawModal: React.FC<GuestDrawModalProps> = ({
                 return (
                   <div
                     key={c.id || c.random_identifier || index}
-                    onClick={() => !drawing && handleDrawMaskedIdentifier(c)}
-                    className="p-4 rounded-3xl bg-gradient-to-br from-slate-900 via-slate-950 to-purple-950/60 border-2 border-purple-500/50 hover:border-amber-400 hover:shadow-[0_0_25px_rgba(245,158,11,0.4)] transition-all flex flex-col justify-between items-center text-center gap-3 cursor-pointer group hover:scale-[1.03] active:scale-95 select-none relative overflow-hidden"
+                    onClick={() => {
+                      if (!drawing) handleDrawMaskedIdentifier(c);
+                    }}
+                    className="p-4 rounded-3xl bg-gradient-to-br from-slate-900 via-slate-950 to-purple-950/60 border-2 border-purple-500/50 hover:border-amber-400 hover:shadow-[0_0_25px_rgba(245,158,11,0.4)] transition-all flex flex-col justify-between items-center text-center gap-3 select-none relative overflow-hidden cursor-pointer group hover:scale-[1.03] active:scale-95"
                   >
                     {/* Top Corner Badge */}
                     <div className="w-full flex items-center justify-between text-[10px] font-mono">
@@ -194,6 +199,13 @@ export const GuestDrawModal: React.FC<GuestDrawModalProps> = ({
                         {formatAcademicCategory(c.bucket)}
                       </span>
                     </div>
+
+                    {isDiplomaPlayer(c) && (
+                      <span className="px-2 py-0.5 rounded-lg bg-rose-950 text-rose-300 border border-rose-600/70 text-[9px] font-bold font-mono inline-flex items-center gap-1 shadow">
+                        <AlertTriangle className="w-2.5 h-2.5 text-rose-400 shrink-0" />
+                        <span>Player detained by 1 year diploma</span>
+                      </span>
+                    )}
 
                     {/* Giant Identified Number (Starts from 1) */}
                     <div className="my-2 flex flex-col items-center justify-center">
@@ -206,7 +218,7 @@ export const GuestDrawModal: React.FC<GuestDrawModalProps> = ({
                         Card #{cardNumber}
                       </span>
                       <span className="text-[10px] text-slate-500 italic mt-0.5">
-                        Stats sealed until tapped
+                        Tap to reveal onto bidding floor
                       </span>
                     </div>
 
@@ -214,10 +226,10 @@ export const GuestDrawModal: React.FC<GuestDrawModalProps> = ({
                     <button
                       type="button"
                       disabled={drawing}
-                      className="w-full py-2 px-3 rounded-xl bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-400 hover:to-yellow-400 text-slate-950 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 shadow-md group-hover:shadow-amber-500/30 transition pointer-events-none"
+                      className="w-full py-2 px-3 rounded-xl font-black text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 shadow-md transition pointer-events-none bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-400 hover:to-yellow-400 text-slate-950 group-hover:shadow-amber-500/30"
                     >
                       <Gavel className="w-3.5 h-3.5 fill-current" />
-                      <span>{drawing ? 'Launching...' : 'Tap for Live Auction'}</span>
+                      <span>{drawing ? 'Sending to Floor...' : 'Send to Bidding Floor'}</span>
                     </button>
                   </div>
                 );

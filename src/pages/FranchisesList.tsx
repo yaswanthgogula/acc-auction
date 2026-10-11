@@ -6,7 +6,7 @@
 
 import React, { useState } from 'react';
 import { useAuction } from '../context/AuctionContext';
-import { formatAcademicCategory } from '../utils/academicCategories';
+import { formatAcademicCategory, isDiplomaPlayer } from '../utils/academicCategories';
 import {
   Shield,
   Crown,
@@ -18,6 +18,7 @@ import {
   X,
   ExternalLink,
   Zap,
+  AlertTriangle,
 } from 'lucide-react';
 
 export const FranchisesList: React.FC<{ onNavigate: (route: string) => void }> = ({ onNavigate }) => {
@@ -151,7 +152,7 @@ export const FranchisesList: React.FC<{ onNavigate: (route: string) => void }> =
                   <div>
                     <div className="text-[10px] text-slate-400 uppercase font-sans">Available Purse</div>
                     <div className="text-base font-black text-amber-400 font-display">
-                      {f.purse} Pts (₹)
+                      {f.purse} Pts
                     </div>
                   </div>
                   <div className="text-right">
@@ -169,11 +170,19 @@ export const FranchisesList: React.FC<{ onNavigate: (route: string) => void }> =
                         <div className="flex justify-between items-center">
                           <span className="text-white font-bold">{p.player_name}</span>
                           <span className="text-amber-400 font-mono font-bold">
-                            {p.acquisition_type === 'DIRECT_ASSIGNMENT' ? '0 Pts (Direct Assignment)' : `${p.price} Pts (₹)`}
+                            {p.acquisition_type === 'DIRECT_ASSIGNMENT' ? '0 Pts (Direct Assignment)' : `${p.price} Pts (Purse)`}
                           </span>
                         </div>
                         <div className="flex flex-wrap items-center justify-between text-[10px] text-slate-400">
-                          <span>{formatAcademicCategory(p.bucket)} • {p.player_type || 'Player'} {p.branch && `• ${p.branch}`}</span>
+                          <span className="flex flex-wrap items-center gap-1.5">
+                            <span>{formatAcademicCategory(p.bucket)} • {p.player_type || 'Player'} {p.branch && `• ${p.branch}`}</span>
+                            {isDiplomaPlayer(p) && (
+                              <span className="px-1.5 py-0.2 rounded bg-rose-950 text-rose-300 border border-rose-700 font-mono inline-flex items-center gap-0.5 text-[9px] font-bold">
+                                <AlertTriangle className="w-2.5 h-2.5 text-rose-400" />
+                                <span>Player detained by 1 year diploma</span>
+                              </span>
+                            )}
+                          </span>
                           {p.roll_number && <span className="font-mono text-cyan-300">{p.roll_number}</span>}
                         </div>
                       </div>

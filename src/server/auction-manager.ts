@@ -42,6 +42,13 @@ class AuctionManager {
   private pausedRemainingMs: number | null = null;
   private pausedAutoTransitionSeconds: number | null = null;
 
+  // Draw Mode & Auto-Transition Control (Requirement 4)
+  private autoDrawMode: boolean = true;
+  private currentDrawMode: 'AUTO' | 'GUEST' = 'AUTO';
+
+  // Tracking passes per lot (Requirement 1)
+  private lotPasses: Map<string, Set<string>> = new Map();
+
   // Session Control (Requirement 11)
   private activeSession: 1 | 2 = 1;
   private sessionState: 'SESSION_1_ACTIVE' | 'SESSION_1_ENDED' | 'SESSION_2_ACTIVE' | 'SESSION_2_ENDED' = 'SESSION_1_ACTIVE';
@@ -138,10 +145,20 @@ class AuctionManager {
           await this.setAuctionSession(editionId, 1, 'START', 'SystemAutoTimer');
           const current = this.getCurrentLot(editionId);
           if (!current) {
-            await this.drawNextPlayer(editionId, 'AUTO', undefined, 'SystemTimer');
+            try {
+              await this.drawNextPlayer(editionId, 'AUTO', undefined, 'SystemTimer');
+            } catch (drawErr: any) {
+              if (drawErr?.message?.includes('NO_AVAILABLE_PLAYERS')) {
+                console.log(`[Auto-Timer] Session 1 active. All approved players in the bucket queue have been called or sold.`);
+              } else {
+                throw drawErr;
+              }
+            }
           }
-        } catch (e) {
-          console.error('Error auto-starting auction after custom timer alert:', e);
+        } catch (e: any) {
+          if (!e?.message?.includes('NO_AVAILABLE_PLAYERS')) {
+            console.error('Error auto-starting auction after custom timer alert:', e);
+          }
         }
       }, 10000);
     }, durationSeconds * 1000);
@@ -250,6 +267,34 @@ class AuctionManager {
     }
   }
 
+  getAutoDrawMode(): boolean {
+    return this.autoDrawMode;
+  }
+
+  getCurrentDrawMode(): 'AUTO' | 'GUEST' {
+    return this.currentDrawMode;
+  }
+
+  setAutoDrawMode(enabled: boolean, mode: 'AUTO' | 'GUEST' = enabled ? 'AUTO' : 'GUEST', actor: string = 'Admin') {
+    this.autoDrawMode = enabled;
+    this.currentDrawMode = mode;
+    if (!enabled) {
+      this.cancelAutoTransition();
+    }
+    const now = Date.now();
+    execute(
+      `INSERT INTO audit_logs (id, edition_id, actor, role, action, entity, entity_id, new_state, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [`AUDIT_${now}`, this.getActiveEdition()?.id || 'ED_ACC_2026', actor, 'ADMIN', 'DRAW_MODE_CHANGED', 'SYSTEM', mode, enabled ? 'AUTO_ACTIVE' : 'AUTO_STOPPED', now]
+    );
+    this.broadcast('AUTO_DRAW_MODE_CHANGED', {
+      autoDrawMode: this.autoDrawMode,
+      currentDrawMode: this.currentDrawMode,
+      reason: enabled ? 'RANDOM_DRAW_ACTIVATED' : 'GUEST_DRAW_ACTIVATED',
+      actor,
+    });
+    return { success: true, autoDrawMode: this.autoDrawMode, currentDrawMode: this.currentDrawMode };
+  }
+
   cancelAutoTransition() {
     if (this.autoTransitionTimeout) {
       clearTimeout(this.autoTransitionTimeout);
@@ -265,6 +310,11 @@ class AuctionManager {
 
   private scheduleAutoTransition(editionId: string) {
     this.cancelAutoTransition();
+
+    // If Guest Draw mode is active, automatic auction draw is stopped (Requirement 4)
+    if (!this.autoDrawMode) {
+      return;
+    }
 
     const sessionState = this.getSessionState();
     if (sessionState.endsWith('_ENDED')) {
@@ -308,7 +358,7 @@ class AuctionManager {
   private scheduleAutoTransitionWithSeconds(editionId: string, durationSeconds: number) {
     this.cancelAutoTransition();
     const sessionState = this.getSessionState();
-    if (sessionState.endsWith('_ENDED') || this.isPaused) {
+    if (sessionState.endsWith('_ENDED') || this.isPaused || !this.autoDrawMode) {
       return;
     }
 
@@ -613,6 +663,7 @@ class AuctionManager {
       bowling_style: lot.bowling_style || parsedStats?.bowlingStyle || 'None',
       stats: parsedStats,
       bids,
+      passed_franchises: Array.from(this.lotPasses.get(lot.id) || []),
       autoTransitionDeadline: this.autoTransitionDeadline,
     };
   }
@@ -780,9 +831,10 @@ class AuctionManager {
            AND p.is_referred = 0
            AND (p.auction_session = ? OR p.auction_session IS NULL)
            AND (p.referral_status IS NULL OR p.referral_status = 'NONE')
+           AND (p.registration_status IS NULL OR p.registration_status != 'UNSOLD')
            AND (p.bucket = ? OR (? = 'PG' AND (p.bucket IS NULL OR p.bucket = 'PG' OR p.program = 'PG')))
            AND p.id NOT IN (SELECT player_id FROM squad_members WHERE edition_id = ? AND (status = 'ACTIVE' OR status IS NULL) AND undone = 0)
-           AND p.id NOT IN (SELECT player_id FROM auction_lots WHERE edition_id = ? AND (lot_state = 'SOLD' OR lot_state = 'IN_AUCTION' OR lot_state = 'CALLED'))
+           AND p.id NOT IN (SELECT player_id FROM auction_lots WHERE edition_id = ? AND (lot_state = 'SOLD' OR lot_state = 'IN_AUCTION' OR lot_state = 'CALLED' OR lot_state = 'UNSOLD'))
          ORDER BY p.roll_number ASC LIMIT ?`,
         [editionId, activeSession, bucket, bucket, editionId, editionId, limit - upcoming.length]
       );
@@ -811,8 +863,9 @@ class AuctionManager {
          AND (p.is_referred = 0 OR p.is_referred IS NULL)
          AND (p.auction_session = ? OR p.auction_session IS NULL)
          AND (p.referral_status IS NULL OR p.referral_status = 'NONE' OR p.referral_status = 'REJECTED')
+         AND (p.registration_status IS NULL OR p.registration_status != 'UNSOLD')
          AND p.id NOT IN (SELECT player_id FROM squad_members WHERE edition_id = ? AND (status = 'ACTIVE' OR status IS NULL) AND undone = 0)
-         AND p.id NOT IN (SELECT player_id FROM auction_lots WHERE edition_id = ? AND (lot_state = 'SOLD' OR lot_state = 'IN_AUCTION' OR lot_state = 'CALLED'))
+         AND p.id NOT IN (SELECT player_id FROM auction_lots WHERE edition_id = ? AND (lot_state = 'SOLD' OR lot_state = 'IN_AUCTION' OR lot_state = 'CALLED' OR lot_state = 'UNSOLD'))
        ORDER BY p.bucket ASC, p.id ASC`,
       [editionId, activeSession, editionId, editionId]
     );
@@ -832,6 +885,54 @@ class AuctionManager {
         auction_session: c.auction_session || activeSession,
       };
     });
+  }
+
+  getUnsoldPlayers(editionId: string) {
+    return queryAll(
+      `SELECT p.id, p.name, p.roll_number, p.photo_url, p.program, p.branch, p.academic_year,
+              p.skill, p.player_type, p.base_price, p.bucket, p.is_detained, p.random_identifier,
+              p.auction_session, p.registration_status, l.id as lot_id, l.created_at as unsold_at
+       FROM players p
+       LEFT JOIN (
+         SELECT player_id, MAX(id) as id, MAX(created_at) as created_at
+         FROM auction_lots
+         WHERE edition_id = ? AND lot_state = 'UNSOLD'
+         GROUP BY player_id
+       ) l ON l.player_id = p.id
+       WHERE p.edition_id = ?
+         AND (p.registration_status = 'UNSOLD' OR p.id IN (SELECT player_id FROM auction_lots WHERE edition_id = ? AND lot_state = 'UNSOLD'))
+       ORDER BY p.bucket ASC, p.roll_number ASC`,
+      [editionId, editionId, editionId]
+    );
+  }
+
+  async reAdmitUnsoldPlayer(editionId: string, playerId: string, actor: string = 'SuperAdmin') {
+    const release = await this.acquireLock();
+    try {
+      const player = queryOne('SELECT * FROM players WHERE id = ? AND edition_id = ?', [playerId, editionId]);
+      if (!player) throw new Error('PLAYER_NOT_FOUND: Player does not exist in this edition.');
+
+      executeTransaction(() => {
+        execute(
+          `UPDATE players SET registration_status = 'APPROVED', approval_status = 'APPROVED', is_auction_eligible = 1 WHERE id = ?`,
+          [playerId]
+        );
+        execute(
+          `UPDATE auction_lots SET lot_state = 'ARCHIVED_UNSOLD' WHERE player_id = ? AND edition_id = ? AND lot_state = 'UNSOLD'`,
+          [playerId, editionId]
+        );
+        const now = Date.now();
+        execute(
+          `INSERT INTO audit_logs (id, edition_id, actor, role, action, entity, entity_id, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [`AUDIT_${now}`, editionId, actor, 'SUPER_ADMIN', 'PLAYER_READMITTED', 'PLAYER', playerId, now]
+        );
+      });
+
+      this.broadcast('STATE_UPDATED', { reason: 'PLAYER_READMITTED', playerId });
+      return { success: true, message: `Player '${player.name}' has been re-admitted to the main auction pool with explicit admin approval.` };
+    } finally {
+      release();
+    }
   }
 
   async adjustTimer(seconds: number, editionId: string, actor: string = 'Admin') {
@@ -932,7 +1033,7 @@ class AuctionManager {
         if (s.acquisition_type === 'AUCTION_PURCHASE') auctionPurchasesCount++;
       }
       const playerSquadRows = queryAll(
-        `SELECT p.bucket FROM squad_members sm JOIN players p ON sm.player_id = p.id WHERE sm.franchise_id = ? AND (sm.status = 'ACTIVE' OR sm.status IS NULL) AND sm.undone = 0`,
+        `SELECT p.bucket FROM squad_members sm JOIN players p ON sm.player_id = p.id WHERE sm.franchise_id = ? AND (sm.status = 'ACTIVE' OR sm.status IS NULL) AND undone = 0`,
         [franchiseId]
       );
       for (const r of playerSquadRows) {
@@ -1016,7 +1117,7 @@ class AuctionManager {
           amount: nextLegalBid,
           lotId: lot.id,
           timestamp: now,
-          message: `🏏 BID ALERT: ${lot.player_name} bid by ${franchise.name} for ₹${nextLegalBid} Lakhs!`,
+          message: `🏏 BID ALERT: ${lot.player_name} bid by ${franchise.name} for ${nextLegalBid} Pts (Purse)!`,
         },
       });
 
@@ -1029,15 +1130,49 @@ class AuctionManager {
   async passLot(franchiseId: string, editionId: string) {
     const lot = this.getCurrentLot(editionId);
     if (!lot) throw new Error('NO_ACTIVE_LOT: No active lot to pass on.');
+    if (lot.highest_bidder_id && lot.highest_bidder_id === franchiseId) {
+      throw new Error('CANNOT_PASS: Current winning bidder cannot pass.');
+    }
     const now = Date.now();
+
+    if (!this.lotPasses.has(lot.id)) {
+      this.lotPasses.set(lot.id, new Set());
+    }
+    const passes = this.lotPasses.get(lot.id)!;
+    passes.add(franchiseId);
+
+    const franchise = queryOne('SELECT * FROM franchises WHERE id = ?', [franchiseId]);
+    const franchiseName = franchise ? franchise.name : 'Franchise';
 
     execute(
       `INSERT INTO audit_logs (id, edition_id, actor, role, action, entity, entity_id, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [`AUDIT_${now}`, editionId, franchiseId, 'FRANCHISE', 'PLAYER_PASSED', 'AUCTION_LOT', lot.id, now]
     );
 
-    this.broadcast('PLAYER_PASSED', { lotId: lot.id, franchiseId });
-    return { success: true };
+    const totalTeams = queryOne('SELECT COUNT(*) as c FROM franchises WHERE edition_id = ?', [editionId])?.c || 11;
+
+    this.broadcast('PLAYER_PASSED', {
+      lotId: lot.id,
+      franchiseId,
+      franchiseName,
+      passedCount: passes.size,
+      totalTeams,
+      playerName: lot.player_name,
+    });
+
+    // If all franchises passed with 0 bids, auto-hammer UNSOLD
+    if ((!lot.bid_count || lot.bid_count === 0) && passes.size >= totalTeams) {
+      setTimeout(() => {
+        this.strikeHammer(editionId, 'System (All Franchises Passed)', 'PLAYER_UNSOLD').catch(console.error);
+      }, 400);
+    } else if (lot.highest_bidder_id && passes.size >= (totalTeams - 1)) {
+      // Leading bidder exists and all other teams have passed -> auto-hammer sold
+      setTimeout(() => {
+        this.strikeHammer(editionId, 'System (All Competing Franchises Passed)', 'HAMMER_SALE').catch(console.error);
+      }, 400);
+    }
+
+    return { success: true, lotId: lot.id, franchiseId, passedCount: passes.size };
   }
 
   async strikeHammer(
@@ -1334,6 +1469,25 @@ class AuctionManager {
     try {
       this.cancelAutoTransition();
 
+      // Manage auto draw mode according to draw protocol (Requirement 4)
+      if (mode === 'GUEST') {
+        this.autoDrawMode = false;
+        this.currentDrawMode = 'GUEST';
+        this.broadcast('AUTO_DRAW_MODE_CHANGED', {
+          autoDrawMode: false,
+          currentDrawMode: 'GUEST',
+          reason: 'GUEST_DRAW_ACTIVATED',
+        });
+      } else {
+        this.autoDrawMode = true;
+        this.currentDrawMode = 'AUTO';
+        this.broadcast('AUTO_DRAW_MODE_CHANGED', {
+          autoDrawMode: true,
+          currentDrawMode: 'AUTO',
+          reason: 'RANDOM_DRAW_ACTIVATED',
+        });
+      }
+
       const sessionState = this.getSessionState();
       if (sessionState.endsWith('_ENDED')) {
         throw new Error(`AUCTION_SESSION_ENDED: Session ${this.activeSession} has concluded. Switch or start the appropriate session.`);
@@ -1356,12 +1510,13 @@ class AuctionManager {
              AND (p.auction_session = ? OR p.auction_session IS NULL)
              AND (p.is_referred = 0 OR p.is_referred IS NULL)
              AND (p.referral_status IS NULL OR p.referral_status = 'NONE' OR p.referral_status = 'REJECTED')
+             AND (p.registration_status IS NULL OR p.registration_status != 'UNSOLD')
              AND p.id NOT IN (SELECT player_id FROM squad_members WHERE edition_id = ? AND (status = 'ACTIVE' OR status IS NULL) AND undone = 0)
-             AND p.id NOT IN (SELECT player_id FROM auction_lots WHERE edition_id = ? AND (lot_state = 'SOLD' OR lot_state = 'IN_AUCTION' OR lot_state = 'CALLED'))`,
+             AND p.id NOT IN (SELECT player_id FROM auction_lots WHERE edition_id = ? AND (lot_state = 'SOLD' OR lot_state = 'IN_AUCTION' OR lot_state = 'CALLED' OR lot_state = 'UNSOLD'))`,
           [selectedIdOrIdentifier, selectedIdOrIdentifier, editionId, currentSession, editionId, editionId]
         );
         if (!targetPlayer) {
-          throw new Error('PLAYER_NOT_ELIGIBLE_FOR_GUEST_DRAW: Selected player identifier is invalid, referred, unapproved, or already auctioned.');
+          throw new Error('PLAYER_NOT_ELIGIBLE_FOR_GUEST_DRAW: Selected player identifier is invalid, unsold, referred, unapproved, or already auctioned.');
         }
       } else {
         const drawOrder = STRICT_BUCKET_AUCTION_ORDER;
@@ -1373,12 +1528,12 @@ class AuctionManager {
                AND (p.auction_session = ? OR p.auction_session IS NULL)
                AND (p.is_referred = 0 OR p.is_referred IS NULL)
                AND (p.referral_status IS NULL OR p.referral_status = 'NONE' OR p.referral_status = 'REJECTED')
+               AND (p.registration_status IS NULL OR p.registration_status != 'UNSOLD')
                AND (p.bucket = ? OR (? = 'PG' AND (p.bucket IS NULL OR p.bucket = 'PG' OR p.program = 'PG')))
                AND p.id NOT IN (SELECT player_id FROM squad_members WHERE edition_id = ? AND (status = 'ACTIVE' OR status IS NULL) AND undone = 0)
-               AND p.id NOT IN (SELECT player_id FROM auction_lots WHERE edition_id = ? AND lot_state = 'SOLD')
-               AND p.id NOT IN (SELECT player_id FROM auction_lots WHERE edition_id = ? AND lot_state = 'IN_AUCTION')
+               AND p.id NOT IN (SELECT player_id FROM auction_lots WHERE edition_id = ? AND (lot_state = 'SOLD' OR lot_state = 'IN_AUCTION' OR lot_state = 'CALLED' OR lot_state = 'UNSOLD'))
              ORDER BY p.roll_number ASC LIMIT 1`,
-            [editionId, currentSession, bucket, bucket, editionId, editionId, editionId]
+            [editionId, currentSession, bucket, bucket, editionId, editionId]
           );
 
           if (candidate) {
