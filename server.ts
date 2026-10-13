@@ -2210,8 +2210,8 @@ app.get('/api/auction/state', (req: Request, res: Response) => {
       };
     });
 
-    const soldCount = queryOne('SELECT COUNT(*) as c FROM auction_lots WHERE edition_id = ? AND lot_state = "SOLD"', [editionId])?.c || 0;
-    const unsoldCount = queryOne('SELECT COUNT(*) as c FROM auction_lots WHERE edition_id = ? AND lot_state = "UNSOLD"', [editionId])?.c || 0;
+    const soldCount = queryOne("SELECT COUNT(*) as c FROM auction_lots WHERE edition_id = ? AND lot_state = 'SOLD'", [editionId])?.c || 0;
+    const unsoldCount = queryOne("SELECT COUNT(*) as c FROM auction_lots WHERE edition_id = ? AND lot_state = 'UNSOLD'", [editionId])?.c || 0;
     const upcomingPlayers = auctionManager.getUpcomingPlayers(editionId, 6);
 
     res.json({

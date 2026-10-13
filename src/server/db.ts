@@ -620,18 +620,23 @@ async function bootstrapSuperAdmin(db: Database) {
 
 /**
  * Adapts SQLite parameter placeholders ('?') to PostgreSQL parameter syntax ('$1', '$2', ...)
+ * and normalizes SQLite double-quoted literals (e.g. status = "ACTIVE") to PostgreSQL single quotes.
  */
 export function convertSqlitePlaceholdersToPg(sql: string): string {
+  // Normalize SQLite double-quoted string literals to PostgreSQL standard single quotes
+  let normalizedSql = sql.replace(/([=><]\s*|\bIN\s*\(\s*|\bDEFAULT\s+)"([^"]+)"/gi, "$1'$2'");
+  normalizedSql = normalizedSql.replace(/"([A-Z0-9_%-]+)"/g, "'$1'");
+
   let paramIndex = 1;
   let inSingleQuote = false;
   let inDoubleQuote = false;
   let result = '';
-  for (let i = 0; i < sql.length; i++) {
-    const char = sql[i];
-    if (char === "'" && (i === 0 || sql[i - 1] !== '\\')) {
+  for (let i = 0; i < normalizedSql.length; i++) {
+    const char = normalizedSql[i];
+    if (char === "'" && (i === 0 || normalizedSql[i - 1] !== '\\')) {
       inSingleQuote = !inSingleQuote;
       result += char;
-    } else if (char === '"' && (i === 0 || sql[i - 1] !== '\\')) {
+    } else if (char === '"' && (i === 0 || normalizedSql[i - 1] !== '\\')) {
       inDoubleQuote = !inDoubleQuote;
       result += char;
     } else if (char === '?' && !inSingleQuote && !inDoubleQuote) {

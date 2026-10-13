@@ -617,7 +617,7 @@ class AuctionManager {
   }
 
   getActiveEdition() {
-    return queryOne('SELECT * FROM editions WHERE status = "ACTIVE" OR status = "AUCTION_ACTIVE" ORDER BY created_at DESC LIMIT 1') ||
+    return queryOne("SELECT * FROM editions WHERE status = 'ACTIVE' OR status = 'AUCTION_ACTIVE' ORDER BY created_at DESC LIMIT 1") ||
       queryOne('SELECT * FROM editions ORDER BY created_at DESC LIMIT 1');
   }
 
